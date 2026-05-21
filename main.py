@@ -259,8 +259,8 @@ async def fire_reminders(bot):
 # ─── MAIN ─────────────────────────────────────────────────
 
 def main():
-    import threading, calculin_bot
-    t = threading.Thread(target=calculin_bot.main, daemon=True)
+    import threading, pitagorin_bot
+    t = threading.Thread(target=pitagorin_bot.main, daemon=True)
     t.start()
     
     app = Application.builder().token(config.TELEGRAM_TOKEN).build()
