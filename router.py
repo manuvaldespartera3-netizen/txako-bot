@@ -8,7 +8,7 @@ import config
 
 logger = logging.getLogger(__name__)
 genai.configure(api_key=config.GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-1.5-flash-latest')
 
 ROUTER_PROMPT = """Eres el clasificador de mensajes del asistente personal de Txako.
 Txako es:
