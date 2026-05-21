@@ -32,9 +32,9 @@ TZ = pytz.timezone('Europe/Madrid')
 
 async def send_to_channel(bot, domain: str, text: str):
     """Envía la respuesta al chat del dominio correcto."""
-    channels = db.get_channel_ids()
-    chat_id = channels.get(domain) or channels.get('general')
-
+    # Primero busca en variables de entorno, luego en Supabase
+    chat_id = config.CANALES.get(domain, 0) or config.CANALES.get('general', 0)
+    
     if not chat_id:
         # Si no hay canal configurado, responde en el chat maestro
         logger.warning(f"Canal '{domain}' no configurado. Enviando al maestro.")
