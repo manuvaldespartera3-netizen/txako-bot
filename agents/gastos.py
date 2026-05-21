@@ -1,5 +1,9 @@
-"""Agente Gastos."""
+"""
+Agente Gastos.
+Usa requests directamente para escribir en Supabase, sin librería cliente.
+"""
 import json, logging, os, re
+import requests
 import gemini
 
 logger = logging.getLogger(__name__)
@@ -10,13 +14,32 @@ CATEGORIAS = ['supermercado','restaurante','transporte','gasolina','salud','farm
 
 pending_expenses: dict[int, dict] = {}
 
-def get_familia_db():
-    from supabase import create_client
-    url = os.environ.get('FAMILIA_SUPABASE_URL','')
-    key = os.environ.get('FAMILIA_SUPABASE_KEY','')
+def save_to_supabase(data: dict) -> bool:
+    """Escribe directamente en Supabase via REST API sin librería cliente."""
+    url = os.environ.get('FAMILIA_SUPABASE_URL', '')
+    key = os.environ.get('FAMILIA_SUPABASE_KEY', '')
     if not url or not key:
-        return None
-    return create_client(url, key)
+        logger.error("Faltan variables FAMILIA_SUPABASE_URL o FAMILIA_SUPABASE_KEY")
+        return False
+    try:
+        response = requests.post(
+            f"{url}/rest/v1/gastos",
+            headers={
+                "apikey": key,
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal"
+            },
+            json=data,
+            timeout=10
+        )
+        if response.status_code in [200, 201]:
+            return True
+        logger.error(f"Supabase error {response.status_code}: {response.text}")
+        return False
+    except Exception as e:
+        logger.error(f"Error guardando en Supabase: {e}")
+        return False
 
 async def parse_expense(text: str) -> dict:
     prompt = f"""Extrae la información de este gasto.
@@ -57,11 +80,11 @@ async def handle_pending(text: str, text_lower: str, chat_id: int) -> str:
         elif any(k in text_lower for k in ['merche','ella']):
             expense['quien'] = 'Merche'
         else:
-            return "¿Es de *Txako* o de *Merche*?"
+            return "¿Es de Txako o de Merche?"
     elif field == 'cantidad':
         m = re.search(r'\d+[.,]?\d*', text.replace(',','.'))
         if not m:
-            return "¿Cuánto fue? Escríbelo en números, ej: *4.50*"
+            return "¿Cuánto fue? Escríbelo en números, ej: 4.50"
         expense['cantidad'] = float(m.group().replace(',','.'))
     elif field == 'concepto':
         expense['concepto'] = text.strip()
@@ -74,7 +97,7 @@ async def handle_pending(text: str, text_lower: str, chat_id: int) -> str:
         if matched:
             expense['categoria'] = matched
         else:
-            return f"No reconocí la categoría. Elige una:\n" + '\n'.join([f"• {c}" for c in CATEGORIAS])
+            return "No reconocí la categoría. Elige una:\n" + '\n'.join([f"• {c}" for c in CATEGORIAS])
     pending_expenses[chat_id] = expense
     return await ask_missing(chat_id)
 
@@ -84,29 +107,30 @@ async def ask_missing(chat_id: int) -> str:
     if not missing:
         return build_summary(expense)
     field = missing[0]
-    if field == 'cantidad': return "💶 ¿Cuánto fue el gasto?"
-    if field == 'concepto': return "📝 ¿En qué consistió?"
-    if field == 'categoria': return "🏷️ ¿Qué categoría?\n" + '\n'.join([f"• {c}" for c in CATEGORIAS])
-    if field == 'quien': return "👤 ¿Es de *Txako* o de *Merche*?"
+    if field == 'cantidad': return "¿Cuánto fue el gasto?"
+    if field == 'concepto': return "¿En qué consistió?"
+    if field == 'categoria': return "¿Qué categoría?\n" + '\n'.join([f"• {c}" for c in CATEGORIAS])
+    if field == 'quien': return "¿Es de Txako o de Merche?"
 
 def build_summary(expense: dict) -> str:
-    return (f"💰 *Resumen:*\n\n• Concepto: *{expense['concepto']}*\n"
-            f"• Importe: *{expense['cantidad']}€*\n• Categoría: *{expense['categoria']}*\n"
-            f"• Quién: *{expense['quien']}*\n\n¿Lo guardo? (*sí* / *no*)")
+    return (f"Resumen:\n\n• Concepto: {expense['concepto']}\n"
+            f"• Importe: {expense['cantidad']} euros\n"
+            f"• Categoria: {expense['categoria']}\n"
+            f"• Quien: {expense['quien']}\n\n"
+            f"Lo guardo? (si / no)")
 
 async def save_expense(chat_id: int, expense: dict) -> str:
     del pending_expenses[chat_id]
-    db = get_familia_db()
-    if not db:
-        return "⚠️ Sin conexión a la app de familia."
-    try:
-        db.table('gastos').insert({
-            'concepto': expense['concepto'], 'cantidad': expense['cantidad'],
-            'quien': expense['quien'], 'categoria': expense['categoria'],
-        }).execute()
-        return f"✅ *Guardado*\n*{expense['concepto']}* — {expense['cantidad']}€\n{expense['categoria']} · {expense['quien']}\n\nYa aparece en la app."
-    except Exception as e:
-        return f"❌ Error: {str(e)}"
+    success = save_to_supabase({
+        'concepto': expense['concepto'],
+        'cantidad': expense['cantidad'],
+        'quien': expense['quien'],
+        'categoria': expense['categoria'],
+    })
+    if success:
+        return f"Guardado: {expense['concepto']} — {expense['cantidad']} euros · {expense['categoria']} · {expense['quien']}. Ya aparece en la app."
+    return "Error guardando. Comprueba las variables FAMILIA_SUPABASE_URL y FAMILIA_SUPABASE_KEY en Railway."
 
 def get_missing_fields(expense: dict) -> list:
     return [f for f in ['cantidad','concepto','categoria','quien'] if not expense.get(f)]
+    
