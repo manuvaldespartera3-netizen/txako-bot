@@ -29,9 +29,7 @@ def save_to_supabase(data: dict) -> bool:
                     "apikey": key,
                     "Authorization": f"Bearer {key}",
                     "Content-Type": "application/json",
-                    "Prefer": "return=minimal",
-                    "Accept-Profile": "public",
-                    "Content-Profile": "public"
+                    "Prefer": "return=minimal"
                 },
                 json=data,
                 timeout=10
@@ -177,12 +175,12 @@ async def save_expense(chat_id: int, expense: dict) -> str:
     from datetime import datetime
     today = datetime.now().strftime('%Y-%m-%d')
     success = save_to_supabase({
-        'CONCEPTO': expense.get('concepto',''),
-        'CANTIDAD': expense.get('cantidad', 0),
-        'QUIEN': expense.get('quien',''),
-        'CATEGORIA': expense.get('categoria',''),
-        'FECHA': today,
-        'NOTA': expense.get('notas','') or '',
+        'concepto': expense.get('concepto',''),
+        'cantidad': expense.get('cantidad', 0),
+        'quien': expense.get('quien',''),
+        'categoria': expense.get('categoria',''),
+        'fecha': today,
+        'nota': expense.get('notas','') or '',
     })
     if success:
         return f"Guardado: {expense.get('concepto')} — {expense.get('cantidad')} euros · {expense.get('categoria')} · {expense.get('quien')}. Ya esta en la app."
@@ -190,4 +188,3 @@ async def save_expense(chat_id: int, expense: dict) -> str:
 
 def get_missing_fields(expense: dict) -> list:
     return [f for f in ['cantidad','concepto','categoria','quien'] if not expense.get(f)]
-    
