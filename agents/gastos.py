@@ -171,12 +171,12 @@ async def save_expense(chat_id: int, expense: dict) -> str:
     from datetime import datetime
     today = datetime.now().strftime('%Y-%m-%d')
     success = save_to_supabase({
-        'concepto': expense.get('concepto',''),
-        'cantidad': expense.get('cantidad', 0),
-        'quien': expense.get('quien',''),
-        'categoria': expense.get('categoria',''),
-        'fecha': today,
-        'notas': expense.get('notas','') or '',
+        'CONCEPTO': expense.get('concepto',''),
+        'CANTIDAD': expense.get('cantidad', 0),
+        'QUIEN': expense.get('quien',''),
+        'CATEGORIA': expense.get('categoria',''),
+        'FECHA': today,
+        'NOTA': expense.get('notas','') or '',
     })
     if success:
         return f"Guardado: {expense.get('concepto')} — {expense.get('cantidad')} euros · {expense.get('categoria')} · {expense.get('quien')}. Ya esta en la app."
