@@ -9,7 +9,7 @@ import google.generativeai as genai
 import config, db
 
 logger = logging.getLogger(__name__)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-1.5-flash-latest')
 TZ = pytz.timezone('Europe/Madrid')
 
 async def parse_reminder(text: str) -> dict | None:
