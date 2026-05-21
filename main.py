@@ -30,19 +30,15 @@ TZ = pytz.timezone('Europe/Madrid')
 
 # ─── ENVÍO A CHAT ESPECIALIZADO ───────────────────────────
 
-async def send_to_channel(bot, domain: str, text: str):
+async def send_to_channel(bot, domain: str, text: str, fallback_chat_id: int = None):
     """Envía la respuesta al chat del dominio correcto."""
-    # Primero busca en variables de entorno, luego en Supabase
-    chat_id = config.CANALES.get(domain, 0) or config.CANALES.get('general', 0)
+    chat_id = config.CANALES.get(domain, 0)
     
     if not chat_id:
-        # Si no hay canal configurado, responde en el chat maestro
-        logger.warning(f"Canal '{domain}' no configurado. Enviando al maestro.")
-        await bot.send_message(
-            chat_id=config.MY_CHAT_ID,
-            text=f"[{domain.upper()}]\n\n{text}",
-            parse_mode='Markdown'
-        )
+        # Sin canal configurado → responde donde escribió el usuario
+        target = fallback_chat_id or config.MY_CHAT_ID
+        logger.info(f"Canal '{domain}' no configurado. Enviando a {target}.")
+        await bot.send_message(chat_id=target, text=text)
         return
 
     # Dividir mensajes largos (límite Telegram 4096 chars)
@@ -160,17 +156,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id in pending_grades:
         if text.lower().strip() in ['sí', 'si', 'yes', 'ok', '✅', 'confirmar', 'correcto']:
             response = await tutoria.confirm_grade(chat_id)
-            await send_to_channel(context.bot, 'tutoria', response)
+            await send_to_channel(context.bot, 'tutoria', response, update.effective_chat.id)
             return
         elif text.lower().strip() in ['no', 'cancelar', 'cancel', '❌']:
             response = tutoria.cancel_grade(chat_id)
-            await send_to_channel(context.bot, 'tutoria', response)
+            await send_to_channel(context.bot, 'tutoria', response, update.effective_chat.id)
             return
 
     # ── Gasto en construcción (campos pendientes) ─────────
     if chat_id in pending_expenses:
         response = await gastos.handle(text, chat_id)
-        await send_to_channel(context.bot, 'gastos', response)
+        await send_to_channel(context.bot, 'gastos', response, update.effective_chat.id)
         return
 
     # ── Mostrar "escribiendo..." ───────────────────────────
@@ -195,7 +191,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         domain = 'general'
 
     # ── Enviar al canal correcto ───────────────────────────
-    await send_to_channel(context.bot, domain, response)
+    await send_to_channel(context.bot, domain, response, update.effective_chat.id)
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Transcribe nota de voz y procesa como texto."""
@@ -233,7 +229,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = gemini.ask(transcription)
         domain = 'general'
 
-    await send_to_channel(context.bot, domain, response)
+    await send_to_channel(context.bot, domain, response, update.effective_chat.id)
 
 # ─── SCHEDULER DE RECORDATORIOS ───────────────────────────
 
