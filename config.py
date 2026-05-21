@@ -16,7 +16,7 @@ GOOGLE_CREDENTIALS = os.environ.get('GOOGLE_CREDENTIALS', '')
 SHEETS_ID          = os.environ.get('SHEETS_ID', '')
 
 # ─── DOMINIOS ─────────────────────────────────────────────
-DOMAINS = ['ef', 'tutoria', 'recordatorios', 'racing', 'gastos', 'general']
+DOMAINS = ['ef', 'tutoria', 'recordatorios', 'racing', 'gastos', 'calculin', 'general']
 
 # ─── CANALES DE RESPUESTA (variables de entorno) ──────────
 import os as _os
@@ -26,5 +26,6 @@ CANALES = {
     'tutoria':       int(_os.environ.get('CANAL_TUTORIA', 0) or 0),
     'recordatorios': int(_os.environ.get('CANAL_RECORDATORIOS', 0) or 0),
     'racing':        int(_os.environ.get('CANAL_RACING', 0) or 0),
+    'calculin':      int(_os.environ.get('CANAL_CALCULIN', 0) or 0),
     'general':       int(_os.environ.get('CANAL_GENERAL', 0) or 0),
 }
