@@ -259,10 +259,6 @@ async def fire_reminders(bot):
 # ─── MAIN ─────────────────────────────────────────────────
 
 def main():
-    import threading, pitagorin_bot
-    t = threading.Thread(target=pitagorin_bot.main, daemon=True)
-    t.start()
-    
     app = Application.builder().token(config.TELEGRAM_TOKEN).build()
 
     # Comandos
@@ -285,7 +281,13 @@ def main():
     )
     scheduler.start()
 
-    logger.info("🤖 Bot Maestro de Txako arrancado.")
+    logger.info("Bot Maestro arrancado.")
+
+    # Arrancar Pitagorin en proceso separado
+    import subprocess, sys
+    subprocess.Popen([sys.executable, "pitagorin_bot.py"])
+    logger.info("Pitagorin arrancado.")
+
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
