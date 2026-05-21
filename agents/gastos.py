@@ -75,43 +75,30 @@ async def handle_pending(text: str, text_lower: str, chat_id: int) -> str:
         if not get_missing_fields(expense):
             return await save_expense(chat_id, expense)
 
-    # En modo resumen — detectar correcciones antes de guardar
+    # En modo resumen — corrección por número de campo
     if not get_missing_fields(expense):
-        # Corrección de concepto
-        if any(k in text_lower for k in ['concepto','descripción','llámalo','ponlo','cambia el concepto','es','llamalo']):
-            # Extraer el nuevo concepto
-            for kw in ['concepto','descripción','llámalo','ponlo','llamalo','es']:
-                if kw in text_lower:
-                    idx = text_lower.find(kw) + len(kw)
-                    nuevo = text[idx:].strip().strip(':').strip()
-                    if nuevo:
-                        expense['concepto'] = nuevo
-                        pending_expenses[chat_id] = expense
-                        return build_summary(expense)
-        # Corrección de categoría
-        matched_cat = next((c for c in CATEGORIAS if c in text_lower), None)
-        if not matched_cat:
-            aliases = {'mercadona':'supermercado','lidl':'supermercado','bar':'restaurante',
-                      'bus':'transporte','médico':'salud','cerveza':'cervezas','cine':'ocio',
-                      'cafe':'restaurante','café':'restaurante'}
-            matched_cat = next((v for k,v in aliases.items() if k in text_lower), None)
-        if matched_cat and matched_cat != expense.get('categoria'):
-            expense['categoria'] = matched_cat
-            pending_expenses[chat_id] = expense
-            return build_summary(expense)
-        # Corrección de quién
-        if any(k in text_lower for k in ['manuel','mío','mio','yo','para mí','mi']):
-            expense['quien'] = 'Manuel'
-            pending_expenses[chat_id] = expense
-            return build_summary(expense)
-        if any(k in text_lower for k in ['merche','ella']):
-            expense['quien'] = 'Merche'
-            pending_expenses[chat_id] = expense
-            return build_summary(expense)
-        # Corrección de cantidad
-        m = re.search(r'\d+[.,]?\d*', text.replace(',','.'))
+        import re as _re
+        # Formato "N texto" donde N es el número del campo
+        m = _re.match(r'^([1-5])\s+(.+)$', text.strip())
         if m:
-            expense['cantidad'] = float(m.group().replace(',','.'))
+            campo = int(m.group(1))
+            valor = m.group(2).strip()
+            if campo == 1:
+                expense['concepto'] = valor
+            elif campo == 2:
+                num = _re.search(r'[\d.,]+', valor)
+                if num:
+                    expense['cantidad'] = float(num.group().replace(',','.'))
+            elif campo == 3:
+                matched = next((c for c in CATEGORIAS if c in valor.lower()), valor.lower())
+                expense['categoria'] = matched
+            elif campo == 4:
+                if any(k in valor.lower() for k in ['manuel','mío','mio','yo','mi']):
+                    expense['quien'] = 'Manuel'
+                else:
+                    expense['quien'] = 'Merche'
+            elif campo == 5:
+                expense['notas'] = valor
             pending_expenses[chat_id] = expense
             return build_summary(expense)
         return build_summary(expense)
@@ -158,11 +145,15 @@ async def ask_missing(chat_id: int) -> str:
     if field == 'quien': return "¿Es de Manuel o de Merche?"
 
 def build_summary(expense: dict) -> str:
-    return (f"Resumen:\n\n• Concepto: {expense['concepto']}\n"
-            f"• Importe: {expense['cantidad']} euros\n"
-            f"• Categoria: {expense['categoria']}\n"
-            f"• Quien: {expense['quien']}\n\n"
-            f"Lo guardo? (si / no)")
+    notas = expense.get('notas', '') or '—'
+    return (f"Resumen — confirma o corrige:\n\n"
+            f"1. Concepto: {expense['concepto']}\n"
+            f"2. Importe: {expense['cantidad']} euros\n"
+            f"3. Categoria: {expense['categoria']}\n"
+            f"4. Quien: {expense['quien']}\n"
+            f"5. Notas: {notas}\n\n"
+            f"Para corregir di: \'1 pan y leche\' o \'5 huevos y pescado\'\n"
+            f"Para guardar di: si")
 
 async def save_expense(chat_id: int, expense: dict) -> str:
     del pending_expenses[chat_id]
@@ -174,6 +165,7 @@ async def save_expense(chat_id: int, expense: dict) -> str:
         'quien': expense['quien'],
         'categoria': expense['categoria'],
         'fecha': today,
+        'notas': expense.get('notas', ''),
     })
     if success:
         return f"Guardado: {expense['concepto']} — {expense['cantidad']} euros · {expense['categoria']} · {expense['quien']}. Ya aparece en la app."
@@ -181,4 +173,3 @@ async def save_expense(chat_id: int, expense: dict) -> str:
 
 def get_missing_fields(expense: dict) -> list:
     return [f for f in ['cantidad','concepto','categoria','quien'] if not expense.get(f)]
-    
