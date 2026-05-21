@@ -49,14 +49,9 @@ async def send_to_channel(bot, domain: str, text: str):
     chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
     for chunk in chunks:
         try:
-            await bot.send_message(
-                chat_id=chat_id,
-                text=chunk,
-                parse_mode='Markdown'
-            )
-        except Exception as e:
-            # Si falla Markdown, enviar sin formato
             await bot.send_message(chat_id=chat_id, text=chunk)
+        except Exception as e:
+            logger.error(f"Error enviando mensaje: {e}")
 
 # ─── TRANSCRIPCIÓN DE VOZ ─────────────────────────────────
 
@@ -288,3 +283,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+    
