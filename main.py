@@ -175,19 +175,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── Procesar con agente correcto ──────────────────────
     if domain == 'tutoria':
-        response = await tutoria.handle(text, chat_id)
+        response = await tutoria.handle(clean_text, chat_id)
     elif domain == 'ef':
-        response = await ef.handle(text)
+        response = await ef.handle(clean_text)
     elif domain == 'recordatorios':
-        response = await recordatorios.handle(text, chat_id)
+        response = await recordatorios.handle(clean_text, chat_id)
     elif domain == 'racing':
-        response = await racing.handle(text)
+        response = await racing.handle(clean_text)
     elif domain == 'gastos':
-        response = await gastos.handle(text, chat_id)
+        response = await gastos.handle(clean_text, chat_id)
     elif domain == 'calculin':
-        response = await calculin.handle(text)
+        response = await calculin.handle(clean_text)
     else:
-        response = gemini.ask("Eres el asistente personal de Txako. Responde en español.\n\n" + text)
+        response = gemini.ask("Eres el asistente personal de Txako. Responde en español.\n\n" + clean_text)
         domain = 'general'
 
     # ── Enviar al canal correcto ───────────────────────────
@@ -259,6 +259,10 @@ async def fire_reminders(bot):
 # ─── MAIN ─────────────────────────────────────────────────
 
 def main():
+    import threading, calculin_bot
+    t = threading.Thread(target=calculin_bot.main, daemon=True)
+    t.start()
+    
     app = Application.builder().token(config.TELEGRAM_TOKEN).build()
 
     # Comandos
