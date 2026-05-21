@@ -8,7 +8,7 @@ import google.generativeai as genai
 import config
 
 logger = logging.getLogger(__name__)
-model = genai.GenerativeModel('gemini-2.0-flash-exp')
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 SYSTEM_PROMPT = """Eres el asistente de Educación Física de Txako, especialista en primaria.
 Trabajas principalmente con alumnos de 1º y 2º de primaria (6-8 años) pero conoces toda la etapa.
