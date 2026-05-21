@@ -29,7 +29,9 @@ def save_to_supabase(data: dict) -> bool:
                     "apikey": key,
                     "Authorization": f"Bearer {key}",
                     "Content-Type": "application/json",
-                    "Prefer": "return=minimal"
+                    "Prefer": "return=minimal",
+                    "Accept-Profile": "public",
+                    "Content-Profile": "public"
                 },
                 json=data,
                 timeout=10
