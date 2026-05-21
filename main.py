@@ -52,24 +52,22 @@ async def send_to_channel(bot, domain: str, text: str, fallback_chat_id: int = N
 # ─── TRANSCRIPCIÓN DE VOZ ─────────────────────────────────
 
 async def transcribe_voice(bot, file_id: str) -> str | None:
-    """Descarga el audio y lo transcribe con Gemini API directa."""
-    import requests, base64
+    """Descarga el audio y lo transcribe con Groq Whisper."""
+    import requests, os
     try:
         file = await bot.get_file(file_id)
         file_bytes = await file.download_as_bytearray()
-        audio_b64 = base64.b64encode(bytes(file_bytes)).decode()
         
+        groq_key = os.environ.get('GROQ_API_KEY', '')
         response = requests.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
-            params={"key": config.GEMINI_API_KEY},
-            json={"contents": [{"parts": [
-                {"inline_data": {"mime_type": "audio/ogg", "data": audio_b64}},
-                {"text": "Transcribe exactamente lo que dice esta nota de voz en español. Solo el texto, sin explicaciones."}
-            ]}]},
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {groq_key}"},
+            files={"file": ("audio.ogg", bytes(file_bytes), "audio/ogg")},
+            data={"model": "whisper-large-v3", "language": "es"},
             timeout=30
         )
         data = response.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        return data.get("text", "").strip()
     except Exception as e:
         logger.error(f"Error transcribiendo voz: {e}")
         return None
