@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-import google.generativeai as genai
+import gemini
 
 import config, db, router
 from agents import tutoria, ef, recordatorios, racing, gastos
@@ -61,17 +61,24 @@ async def send_to_channel(bot, domain: str, text: str):
 # ─── TRANSCRIPCIÓN DE VOZ ─────────────────────────────────
 
 async def transcribe_voice(bot, file_id: str) -> str | None:
-    """Descarga el audio y lo transcribe con Gemini."""
+    """Descarga el audio y lo transcribe con Gemini API directa."""
+    import requests, base64
     try:
         file = await bot.get_file(file_id)
         file_bytes = await file.download_as_bytearray()
+        audio_b64 = base64.b64encode(bytes(file_bytes)).decode()
         
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
-        response = model.generate_content([
-            {"mime_type": "audio/ogg", "data": bytes(file_bytes)},
-            "Transcribe exactamente lo que dice esta nota de voz en español. Solo el texto, sin explicaciones."
-        ])
-        return response.text.strip()
+        response = requests.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
+            params={"key": config.GEMINI_API_KEY},
+            json={"contents": [{"parts": [
+                {"inline_data": {"mime_type": "audio/ogg", "data": audio_b64}},
+                {"text": "Transcribe exactamente lo que dice esta nota de voz en español. Solo el texto, sin explicaciones."}
+            ]}]},
+            timeout=30
+        )
+        data = response.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception as e:
         logger.error(f"Error transcribiendo voz: {e}")
         return None
@@ -189,11 +196,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif domain == 'gastos':
         response = await gastos.handle(text, chat_id)
     else:
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
-        resp = model.generate_content(
-            "Eres el asistente personal de Txako. Responde en español.\n\n" + text
-        )
-        response = resp.text
+        response = gemini.ask("Eres el asistente personal de Txako. Responde en español.\n\n" + text)
         domain = 'general'
 
     # ── Enviar al canal correcto ───────────────────────────
@@ -232,9 +235,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif domain == 'gastos':
         response = await gastos.handle(transcription, update.effective_chat.id)
     else:
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
-        resp = model.generate_content(transcription)
-        response = resp.text
+        response = gemini.ask(transcription)
         domain = 'general'
 
     await send_to_channel(context.bot, domain, response)
@@ -260,8 +261,6 @@ async def fire_reminders(bot):
 # ─── MAIN ─────────────────────────────────────────────────
 
 def main():
-    genai.configure(api_key=config.GEMINI_API_KEY)
-    
     app = Application.builder().token(config.TELEGRAM_TOKEN).build()
 
     # Comandos
