@@ -17,7 +17,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 import gemini
 
 import config, db, router
-from agents import tutoria, ef, recordatorios, racing, gastos
+from agents import tutoria, ef, recordatorios, racing, gastos, calculin
 from agents.tutoria import pending_grades
 from agents.gastos import pending_expenses
 
@@ -130,7 +130,7 @@ async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_canales(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Muestra el estado de los canales configurados."""
     channels = db.get_channel_ids()
-    emoji_map = {'ef':'🏃','tutoria':'📋','recordatorios':'⏰','racing':'📸','gastos':'💰','general':'🧠'}
+    emoji_map = {'ef':'🏃','tutoria':'📋','recordatorios':'⏰','racing':'📸','gastos':'💰','calculin':'🧮','general':'🧠'}
     msg = "📡 *Estado de canales*\n\n"
     for domain in config.DOMAINS:
         emoji = emoji_map.get(domain,'💬')
@@ -184,6 +184,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = await racing.handle(text)
     elif domain == 'gastos':
         response = await gastos.handle(text, chat_id)
+    elif domain == 'calculin':
+        response = await calculin.handle(text)
     else:
         response = gemini.ask("Eres el asistente personal de Txako. Responde en español.\n\n" + text)
         domain = 'general'
@@ -230,6 +232,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = await racing.handle(transcription)
     elif domain == 'gastos':
         response = await gastos.handle(transcription, chat_id)
+    elif domain == 'calculin':
+        response = await calculin.handle(transcription)
     else:
         response = gemini.ask("Eres el asistente personal de Txako. Responde en espanol.\n\n" + transcription)
         domain = 'general'
