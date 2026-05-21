@@ -46,8 +46,8 @@ async def parse_expense(text: str) -> dict:
 Texto: "{text}"
 Categorías: {', '.join(CATEGORIAS)}
 Responde SOLO con JSON sin markdown:
-{{"concepto": "descripción o null", "cantidad": numero_o_null, "quien": "Txako" o "Merche" o null, "categoria": "categoria o null"}}
-- mío/yo/txako → "Txako", merche/ella → "Merche", si no se menciona → null
+{{"concepto": "descripción o null", "cantidad": numero_o_null, "quien": "Manuel" o "Merche" o null, "categoria": "categoria o null"}}
+- mío/yo/manuel → "Manuel", merche/ella → "Merche", si no se menciona → null
 - cantidad siempre número decimal"""
     try:
         raw = gemini.ask(prompt).strip().replace('```json','').replace('```','').strip()
@@ -75,12 +75,12 @@ async def handle_pending(text: str, text_lower: str, chat_id: int) -> str:
         return build_summary(expense)
     field = missing[0]
     if field == 'quien':
-        if any(k in text_lower for k in ['mío','mio','yo','txako','para mí','mi']):
-            expense['quien'] = 'Txako'
+        if any(k in text_lower for k in ['mío','mio','yo','manuel','para mí','mi']):
+            expense['quien'] = 'Manuel'
         elif any(k in text_lower for k in ['merche','ella']):
             expense['quien'] = 'Merche'
         else:
-            return "¿Es de Txako o de Merche?"
+            return "¿Es de Manuel o de Merche?"
     elif field == 'cantidad':
         m = re.search(r'\d+[.,]?\d*', text.replace(',','.'))
         if not m:
@@ -110,7 +110,7 @@ async def ask_missing(chat_id: int) -> str:
     if field == 'cantidad': return "¿Cuánto fue el gasto?"
     if field == 'concepto': return "¿En qué consistió?"
     if field == 'categoria': return "¿Qué categoría?\n" + '\n'.join([f"• {c}" for c in CATEGORIAS])
-    if field == 'quien': return "¿Es de Txako o de Merche?"
+    if field == 'quien': return "¿Es de Manuel o de Merche?"
 
 def build_summary(expense: dict) -> str:
     return (f"Resumen:\n\n• Concepto: {expense['concepto']}\n"
@@ -121,11 +121,14 @@ def build_summary(expense: dict) -> str:
 
 async def save_expense(chat_id: int, expense: dict) -> str:
     del pending_expenses[chat_id]
+    from datetime import datetime
+    today = datetime.now().strftime('%Y-%m-%d')
     success = save_to_supabase({
         'concepto': expense['concepto'],
         'cantidad': expense['cantidad'],
         'quien': expense['quien'],
         'categoria': expense['categoria'],
+        'fecha': today,
     })
     if success:
         return f"Guardado: {expense['concepto']} — {expense['cantidad']} euros · {expense['categoria']} · {expense['quien']}. Ya aparece en la app."
