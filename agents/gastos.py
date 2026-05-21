@@ -7,7 +7,7 @@ import json, logging, os
 import google.generativeai as genai
 
 logger = logging.getLogger(__name__)
-model = genai.GenerativeModel('gemini-2.0-flash-exp')
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 CATEGORIAS = [
     'supermercado', 'restaurante', 'transporte', 'gasolina',
