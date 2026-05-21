@@ -64,15 +64,60 @@ async def handle(text: str, chat_id: int) -> str:
 
 async def handle_pending(text: str, text_lower: str, chat_id: int) -> str:
     expense = pending_expenses[chat_id]
+
+    # Cancelar
     if text_lower in ['no','cancelar','cancel','❌','nada']:
         del pending_expenses[chat_id]
         return "❌ Gasto cancelado."
+
+    # Confirmar y guardar
     if text_lower in ['sí','si','yes','ok','correcto','✅','guardar','dale']:
         if not get_missing_fields(expense):
             return await save_expense(chat_id, expense)
-    missing = get_missing_fields(expense)
-    if not missing:
+
+    # En modo resumen — detectar correcciones antes de guardar
+    if not get_missing_fields(expense):
+        # Corrección de concepto
+        if any(k in text_lower for k in ['concepto','descripción','llámalo','ponlo','cambia el concepto','es','llamalo']):
+            # Extraer el nuevo concepto
+            for kw in ['concepto','descripción','llámalo','ponlo','llamalo','es']:
+                if kw in text_lower:
+                    idx = text_lower.find(kw) + len(kw)
+                    nuevo = text[idx:].strip().strip(':').strip()
+                    if nuevo:
+                        expense['concepto'] = nuevo
+                        pending_expenses[chat_id] = expense
+                        return build_summary(expense)
+        # Corrección de categoría
+        matched_cat = next((c for c in CATEGORIAS if c in text_lower), None)
+        if not matched_cat:
+            aliases = {'mercadona':'supermercado','lidl':'supermercado','bar':'restaurante',
+                      'bus':'transporte','médico':'salud','cerveza':'cervezas','cine':'ocio',
+                      'cafe':'restaurante','café':'restaurante'}
+            matched_cat = next((v for k,v in aliases.items() if k in text_lower), None)
+        if matched_cat and matched_cat != expense.get('categoria'):
+            expense['categoria'] = matched_cat
+            pending_expenses[chat_id] = expense
+            return build_summary(expense)
+        # Corrección de quién
+        if any(k in text_lower for k in ['manuel','mío','mio','yo','para mí','mi']):
+            expense['quien'] = 'Manuel'
+            pending_expenses[chat_id] = expense
+            return build_summary(expense)
+        if any(k in text_lower for k in ['merche','ella']):
+            expense['quien'] = 'Merche'
+            pending_expenses[chat_id] = expense
+            return build_summary(expense)
+        # Corrección de cantidad
+        m = re.search(r'\d+[.,]?\d*', text.replace(',','.'))
+        if m:
+            expense['cantidad'] = float(m.group().replace(',','.'))
+            pending_expenses[chat_id] = expense
+            return build_summary(expense)
         return build_summary(expense)
+
+    # Rellenar campos que faltan
+    missing = get_missing_fields(expense)
     field = missing[0]
     if field == 'quien':
         if any(k in text_lower for k in ['mío','mio','yo','manuel','para mí','mi']):
