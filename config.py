@@ -17,3 +17,14 @@ SHEETS_ID          = os.environ.get('SHEETS_ID', '')
 
 # ─── DOMINIOS ─────────────────────────────────────────────
 DOMAINS = ['ef', 'tutoria', 'recordatorios', 'racing', 'gastos', 'general']
+
+# ─── CANALES DE RESPUESTA (variables de entorno) ──────────
+import os as _os
+CANALES = {
+    'gastos':        int(_os.environ.get('CANAL_GASTOS', 0) or 0),
+    'ef':            int(_os.environ.get('CANAL_EF', 0) or 0),
+    'tutoria':       int(_os.environ.get('CANAL_TUTORIA', 0) or 0),
+    'recordatorios': int(_os.environ.get('CANAL_RECORDATORIOS', 0) or 0),
+    'racing':        int(_os.environ.get('CANAL_RACING', 0) or 0),
+    'general':       int(_os.environ.get('CANAL_GENERAL', 0) or 0),
+}
