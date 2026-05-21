@@ -1,24 +1,27 @@
 """
 Capa de base de datos. Todo lo que necesita persistencia va aquí.
 """
-from supabase import create_client, Client
-import config, logging
+import logging
+from supabase import create_client
+import config
 
 logger = logging.getLogger(__name__)
-db: Client = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
+
+def get_db():
+    return create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
 
 # ─── CANALES DE RESPUESTA ─────────────────────────────────
 
 def save_channel(domain: str, chat_id: int):
-    """Guarda o actualiza el chat_id de un dominio."""
+    db = get_db()
     db.table('channels').upsert({
         'domain': domain,
         'chat_id': chat_id
     }, on_conflict='domain').execute()
 
 def get_channel_ids() -> dict:
-    """Devuelve {domain: chat_id} para todos los dominios configurados."""
     try:
+        db = get_db()
         result = db.table('channels').select('domain, chat_id').execute()
         return {r['domain']: r['chat_id'] for r in (result.data or [])}
     except Exception as e:
@@ -28,8 +31,8 @@ def get_channel_ids() -> dict:
 # ─── RECORDATORIOS ────────────────────────────────────────
 
 def save_reminder(chat_id: int, descripcion: str, fecha_hora: str) -> bool:
-    """fecha_hora en formato ISO."""
     try:
+        db = get_db()
         db.table('recordatorios').insert({
             'chat_id': chat_id,
             'descripcion': descripcion,
@@ -46,6 +49,7 @@ def get_pending_reminders() -> list:
     import pytz
     now = datetime.now(pytz.timezone('Europe/Madrid')).isoformat()
     try:
+        db = get_db()
         result = db.table('recordatorios')\
             .select('*')\
             .eq('enviado', False)\
@@ -57,6 +61,7 @@ def get_pending_reminders() -> list:
         return []
 
 def mark_reminder_sent(rid: int):
+    db = get_db()
     db.table('recordatorios').update({'enviado': True}).eq('id', rid).execute()
 
 def get_future_reminders(chat_id: int) -> list:
@@ -64,6 +69,7 @@ def get_future_reminders(chat_id: int) -> list:
     import pytz
     now = datetime.now(pytz.timezone('Europe/Madrid')).isoformat()
     try:
+        db = get_db()
         result = db.table('recordatorios')\
             .select('*')\
             .eq('chat_id', chat_id)\
