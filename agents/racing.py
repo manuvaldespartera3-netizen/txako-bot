@@ -6,7 +6,7 @@ import logging
 import google.generativeai as genai
 
 logger = logging.getLogger(__name__)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-1.5-flash-latest')
 
 SYSTEM_PROMPT = """Eres el creador de contenido de la Escuela de Fútbol Racing Club Zaragoza.
 
