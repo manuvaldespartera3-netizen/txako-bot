@@ -204,32 +204,37 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     transcription = await transcribe_voice(context.bot, voice.file_id)
     if not transcription:
-        await update.message.reply_text("❌ No pude transcribir el audio. Inténtalo de nuevo.")
+        await update.message.reply_text("No pude transcribir el audio. Intentalo de nuevo.")
         return
 
-    # Confirmar transcripción al usuario
-    await update.message.reply_text(f"🎤 *Escuché:* _{transcription}_", parse_mode='Markdown')
+    await update.message.reply_text(f"Escuche: {transcription}")
 
-    # Procesar como texto normal
+    chat_id = update.effective_chat.id
+
+    # Si hay gasto pendiente, el audio va SIEMPRE al agente de gastos
+    if chat_id in pending_expenses:
+        response = await gastos.handle(transcription, chat_id)
+        await send_to_channel(context.bot, 'gastos', response, chat_id)
+        return
+
+    # Sin pendiente, clasificar normalmente
     domain = await router.classify(transcription)
     
     if domain == 'tutoria':
-        response = await tutoria.handle(transcription, update.effective_chat.id, is_voice=True)
+        response = await tutoria.handle(transcription, chat_id, is_voice=True)
     elif domain == 'ef':
         response = await ef.handle(transcription)
     elif domain == 'recordatorios':
-        response = await recordatorios.handle(transcription, update.effective_chat.id)
+        response = await recordatorios.handle(transcription, chat_id)
     elif domain == 'racing':
         response = await racing.handle(transcription)
     elif domain == 'gastos':
-        response = await gastos.handle(transcription, update.effective_chat.id)
+        response = await gastos.handle(transcription, chat_id)
     else:
-        response = gemini.ask(transcription)
+        response = gemini.ask("Eres el asistente personal de Txako. Responde en espanol.\n\n" + transcription)
         domain = 'general'
 
-    await send_to_channel(context.bot, domain, response, update.effective_chat.id)
-
-# ─── SCHEDULER DE RECORDATORIOS ───────────────────────────
+    await send_to_channel(context.bot, domain, response, chat_id)
 
 async def fire_reminders(bot):
     pending = db.get_pending_reminders()
@@ -277,4 +282,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-    
