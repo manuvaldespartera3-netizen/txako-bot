@@ -10,7 +10,7 @@ from integrations.sheets import (
 import config, db
 
 logger = logging.getLogger(__name__)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-1.5-flash-latest')
 
 # Estado temporal para confirmaciones de notas pendientes
 pending_grades: dict = {}  # {chat_id: {alumno, prueba, nota, tab, row, col}}
