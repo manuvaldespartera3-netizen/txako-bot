@@ -1,5 +1,5 @@
 python-telegram-bot==20.7
-google-generativeai==0.7.2
+google-generativeai==0.8.3
 supabase==2.5.0
 APScheduler==3.10.4
 pytz==2024.1
