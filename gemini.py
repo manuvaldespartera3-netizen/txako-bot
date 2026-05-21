@@ -1,15 +1,13 @@
 """
 Cliente Gemini usando requests directamente.
-Sin librerías de Google que cambien y rompan.
 """
 import requests, logging, os
 
 logger = logging.getLogger(__name__)
 GEMINI_KEY = os.environ.get('GEMINI_API_KEY', '')
-API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
 
 def ask(prompt: str) -> str:
-    """Llama a Gemini y devuelve el texto de respuesta."""
     try:
         response = requests.post(
             API_URL,
@@ -18,7 +16,14 @@ def ask(prompt: str) -> str:
             timeout=30
         )
         data = response.json()
+        
+        # Log completo para debug
+        if "candidates" not in data:
+            error_msg = data.get("error", {}).get("message", str(data))
+            logger.error(f"Gemini error completo: {data}")
+            return f"❌ Error Gemini: {error_msg}"
+        
         return data["candidates"][0]["content"]["parts"][0]["text"]
     except Exception as e:
-        logger.error(f"Error Gemini: {e} | Response: {response.text if 'response' in dir() else ''}")
-        return f"❌ Error de IA: {str(e)}"
+        logger.error(f"Error Gemini excepción: {e}")
+        return f"❌ Error: {str(e)}"
