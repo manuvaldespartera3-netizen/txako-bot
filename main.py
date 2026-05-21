@@ -106,12 +106,18 @@ async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Se ejecuta en los chats especializados para registrarlos."""
     if not context.args:
         await update.message.reply_text(
-            "Uso: `/setup dominio`\nDominios: ef, tutoria, recordatorios, racing, general",
+            "Uso: `/setup dominio`\nDominios: ef, tutoria, recordatorios, racing, gastos, general",
             parse_mode='Markdown'
         )
         return
-    domain = context.args[0].lower()
-    if domain not in config.DOMAINS:
+    # Buscar dominio en todos los args (por si viene con @bot delante)
+    domain = None
+    for arg in context.args:
+        candidate = arg.lower().strip()
+        if candidate in config.DOMAINS:
+            domain = candidate
+            break
+    if not domain:
         await update.message.reply_text(f"Dominio inválido. Usa uno de: {', '.join(config.DOMAINS)}")
         return
     
