@@ -174,13 +174,16 @@ async def save_expense(chat_id: int, expense: dict) -> str:
     del pending_expenses[chat_id]
     from datetime import datetime
     today = datetime.now().strftime('%Y-%m-%d')
+    # Capitalizar primera letra de texto
+    def cap(s): return s.capitalize() if s else s
+    
     success = save_to_supabase({
-        'concepto': expense.get('concepto',''),
+        'concepto': cap(expense.get('concepto','')),
         'cantidad': expense.get('cantidad', 0),
         'quien': expense.get('quien',''),
-        'categoria': expense.get('categoria',''),
+        'categoria': cap(expense.get('categoria','')),
         'fecha': today,
-        'nota': expense.get('notas','') or '',
+        'nota': cap(expense.get('notas','') or ''),
     })
     if success:
         return f"Guardado: {expense.get('concepto')} — {expense.get('cantidad')} euros · {expense.get('categoria')} · {expense.get('quien')}. Ya esta en la app."
