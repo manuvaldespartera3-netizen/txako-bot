@@ -20,22 +20,26 @@ def save_to_supabase(data: dict) -> bool:
     key = os.environ.get('FAMILIA_SUPABASE_KEY', '')
     if not url or not key:
         return False
-    try:
-        response = requests.post(
-            f"{url}/rest/v1/gastos",
-            headers={
-                "apikey": key,
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-                "Prefer": "return=minimal"
-            },
-            json=data,
-            timeout=10
-        )
-        return response.status_code in [200, 201]
-    except Exception as e:
-        logger.error(f"Error Supabase: {e}")
-        return False
+    # Reintentar hasta 3 veces si falla
+    for intento in range(3):
+        try:
+            response = requests.post(
+                f"{url}/rest/v1/gastos",
+                headers={
+                    "apikey": key,
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                    "Prefer": "return=minimal"
+                },
+                json=data,
+                timeout=10
+            )
+            if response.status_code in [200, 201]:
+                return True
+            logger.error(f"Intento {intento+1} fallido: {response.status_code} {response.text}")
+        except Exception as e:
+            logger.error(f"Intento {intento+1} error: {e}")
+    return False
 
 async def parse_expense(text: str) -> dict:
     """Extrae TODOS los campos posibles del texto de una vez."""
