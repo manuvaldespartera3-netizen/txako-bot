@@ -1,12 +1,11 @@
 """
-Agente BLASA - Recordatorios y cumpleaños.
-- Eventos puntuales: avisa el día antes, luego cada 2h hasta confirmar
+Agente BLASA - Recordatorios, eventos y cumpleaños.
+- Eventos puntuales: avisa el día anterior a las 21:00, luego cada 2h entre 8:00-22:00
 - Cumpleaños: avisa el día del cumple a las 10:00
-- Consulta: "qué tengo hoy/mañana"
-- Gestión: listar, editar, borrar
+- Consultas: hoy, mañana, esta semana
+- Gestión: hecho ID, cancela ID, borra ID
 """
-import json, logging, os, re
-import requests
+import json, logging, os, re, requests
 import gemini
 from datetime import datetime, date, timedelta
 import pytz
@@ -15,15 +14,12 @@ logger = logging.getLogger(__name__)
 TZ = pytz.timezone('Europe/Madrid')
 
 def get_db():
-    url = os.environ.get('SUPABASE_URL', '')
-    key = os.environ.get('SUPABASE_KEY', '')
-    return url, key
+    return os.environ.get('SUPABASE_URL',''), os.environ.get('SUPABASE_KEY','')
 
-def db_get(tabla: str, filtros: dict = {}) -> list:
+def db_get(tabla: str, query: str = '') -> list:
     url, key = get_db()
-    params = "&".join([f"{k}=eq.{v}" for k, v in filtros.items()])
     r = requests.get(
-        f"{url}/rest/v1/{tabla}?{params}&order=fecha.asc",
+        f"{url}/rest/v1/{tabla}?{query}",
         headers={"apikey": key, "Authorization": f"Bearer {key}"},
         timeout=10
     )
@@ -58,46 +54,27 @@ def db_delete(tabla: str, id: int) -> bool:
     )
     return r.status_code in [200, 204]
 
-# ─── PARSEAR CON IA ───────────────────────────────────────
+# ─── PARSERS ─────────────────────────────────────────────
 
 async def parse_evento(text: str) -> dict | None:
     now = datetime.now(TZ)
-    manana = (now + timedelta(days=1)).strftime('%Y-%m-%d')
-    hoy = now.strftime('%Y-%m-%d')
     dias = ['lunes','martes','miércoles','jueves','viernes','sábado','domingo']
-    dia_semana = dias[now.weekday()]
-    
-    # Calcular los próximos 7 días con su día de la semana
     proximos = {}
     for i in range(1, 8):
         d = now + timedelta(days=i)
         proximos[dias[d.weekday()]] = d.strftime('%Y-%m-%d')
-
     proximos_str = "\n".join([f"- {k} = {v}" for k, v in proximos.items()])
 
     prompt = f"""Extrae la información de este recordatorio o evento.
-HOY es: {hoy} ({dia_semana})
-MAÑANA es: {manana}
+HOY es: {now.strftime('%Y-%m-%d')} ({dias[now.weekday()]})
+MAÑANA es: {(now + timedelta(days=1)).strftime('%Y-%m-%d')}
 Próximos días:
 {proximos_str}
 
 Texto: "{text}"
 
-Interpreta correctamente:
-- "mañana" = {manana}
-- "hoy" = {hoy}
-- "el lunes/martes/..." = usa la tabla de próximos días
-- "el próximo lunes" = el lunes de la tabla
-- "en X días" = suma X días a hoy
-- Si dice una hora como "a las 10" → hora = "10:00"
-
 Responde SOLO con JSON sin markdown:
-{{
-  "descripcion": "descripción clara y corta de la tarea",
-  "fecha": "YYYY-MM-DD",
-  "hora": "HH:MM o null",
-  "valido": true
-}}
+{{"descripcion": "tarea clara y corta", "fecha": "YYYY-MM-DD", "hora": "HH:MM o null", "valido": true}}
 Si no hay fecha: {{"valido": false}}"""
     try:
         raw = gemini.ask(prompt).strip().replace('```json','').replace('```','').strip()
@@ -108,27 +85,21 @@ Si no hay fecha: {{"valido": false}}"""
         return None
 
 async def parse_cumpleanos(text: str) -> dict | None:
-    prompt = f"""Extrae el nombre y la fecha de cumpleaños de este texto.
+    prompt = f"""Extrae el nombre y la fecha de cumpleaños.
 Texto: "{text}"
-
-Meses en español: enero=01, febrero=02, marzo=03, abril=04, mayo=05, junio=06,
+Meses: enero=01, febrero=02, marzo=03, abril=04, mayo=05, junio=06,
 julio=07, agosto=08, septiembre=09, octubre=10, noviembre=11, diciembre=12
 
-Responde SOLO con JSON sin markdown, sin explicaciones:
-{{"nombre": "nombre de la persona", "mes": "01-12", "dia": "01-31", "valido": true}}
-Si no hay nombre o fecha clara: {{"valido": false}}
-
-Ejemplos:
-"cumpleanos de Merche el 10 de noviembre" → {{"nombre": "Merche", "mes": "11", "dia": "10", "valido": true}}
-"apunta el cumple de Ana el 5 julio" → {{"nombre": "Ana", "mes": "07", "dia": "05", "valido": true}}
-"cumpleanos Merche 10 noviembre" → {{"nombre": "Merche", "mes": "11", "dia": "10", "valido": true}}"""
+Responde SOLO con JSON sin markdown:
+{{"nombre": "nombre", "mes": "01-12", "dia": "01-31", "valido": true}}
+Si falta nombre o fecha: {{"valido": false}}"""
     try:
         raw = gemini.ask(prompt).strip().replace('```json','').replace('```','').strip()
         data = json.loads(raw)
         if not data.get('valido'):
             return None
-        mes = data['mes'].zfill(2)
-        dia = data['dia'].zfill(2)
+        mes = str(data['mes']).zfill(2)
+        dia = str(data['dia']).zfill(2)
         return {'nombre': data['nombre'], 'fecha': f"{mes}-{dia}", 'valido': True}
     except Exception as e:
         logger.error(f"Error parseando cumpleaños: {e}")
@@ -136,256 +107,192 @@ Ejemplos:
 
 # ─── CONSULTAS ────────────────────────────────────────────
 
-def get_eventos_hoy() -> list:
-    today = date.today().isoformat()
+def get_eventos_rango(desde: date, hasta: date, solo_pendientes: bool = True) -> list:
     url, key = get_db()
+    query = f"fecha=gte.{desde.isoformat()}&fecha=lte.{hasta.isoformat()}&order=fecha.asc,hora.asc"
+    if solo_pendientes:
+        query += "&confirmado=eq.false"
     r = requests.get(
-        f"{url}/rest/v1/blasa_eventos?fecha=eq.{today}&confirmado=eq.false",
+        f"{url}/rest/v1/blasa_eventos?{query}",
         headers={"apikey": key, "Authorization": f"Bearer {key}"},
         timeout=10
     )
     return r.json() if r.status_code == 200 else []
 
-def get_eventos_manana() -> list:
-    tomorrow = (date.today() + timedelta(days=1)).isoformat()
-    url, key = get_db()
-    r = requests.get(
-        f"{url}/rest/v1/blasa_eventos?fecha=eq.{tomorrow}&confirmado=eq.false",
-        headers={"apikey": key, "Authorization": f"Bearer {key}"},
-        timeout=10
-    )
-    return r.json() if r.status_code == 200 else []
-
-def get_cumpleanos_hoy() -> list:
-    today = date.today()
-    mes_dia = today.strftime('%m-%d')
-    url, key = get_db()
-    r = requests.get(
-        f"{url}/rest/v1/blasa_cumpleanos",
-        headers={"apikey": key, "Authorization": f"Bearer {key}"},
-        timeout=10
-    )
-    todos = r.json() if r.status_code == 200 else []
-    return [c for c in todos if c['fecha'].endswith(mes_dia) or c['fecha'][5:] == mes_dia]
-
-def get_cumpleanos_manana() -> list:
-    tomorrow = (date.today() + timedelta(days=1))
-    mes_dia = tomorrow.strftime('%m-%d')
-    url, key = get_db()
-    r = requests.get(
-        f"{url}/rest/v1/blasa_cumpleanos",
-        headers={"apikey": key, "Authorization": f"Bearer {key}"},
-        timeout=10
-    )
-    todos = r.json() if r.status_code == 200 else []
-    return [c for c in todos if c['fecha'].endswith(mes_dia) or c['fecha'][5:] == mes_dia]
-
-def get_proximos_cumpleanos() -> list:
-    """Devuelve cumpleaños de los próximos 30 días."""
-    url, key = get_db()
-    r = requests.get(
-        f"{url}/rest/v1/blasa_cumpleanos",
-        headers={"apikey": key, "Authorization": f"Bearer {key}"},
-        timeout=10
-    )
-    todos = r.json() if r.status_code == 200 else []
-    hoy = date.today()
-    proximos = []
+def get_cumpleanos_rango(desde: date, hasta: date) -> list:
+    todos = db_get('blasa_cumpleanos', 'order=fecha.asc')
+    result = []
     for c in todos:
         try:
             mes_dia = c['fecha'][5:] if len(c['fecha']) > 5 else c['fecha']
-            cumple_este_año = date(hoy.year, int(mes_dia[:2]), int(mes_dia[3:]))
-            if cumple_este_año < hoy:
-                cumple_este_año = date(hoy.year + 1, int(mes_dia[:2]), int(mes_dia[3:]))
-            dias_faltan = (cumple_este_año - hoy).days
-            if 0 <= dias_faltan <= 30:
-                proximos.append({**c, 'dias_faltan': dias_faltan, 'fecha_cumple': cumple_este_año})
+            mes = int(mes_dia[:2])
+            dia = int(mes_dia[3:])
+            for año in [desde.year, desde.year + 1]:
+                cumple = date(año, mes, dia)
+                if desde <= cumple <= hasta:
+                    result.append({**c, 'fecha_cumple': cumple})
         except:
             pass
-    return sorted(proximos, key=lambda x: x['dias_faltan'])
+    return sorted(result, key=lambda x: x['fecha_cumple'])
 
-# ─── SCHEDULER CHECKS ─────────────────────────────────────
+def formatear_eventos(eventos: list, cumples: list, titulo: str) -> str:
+    if not eventos and not cumples:
+        return f"{titulo}: no tienes nada."
+    lineas = [f"{titulo}:\n"]
+    for c in cumples:
+        lineas.append(f"Cumpleanos de {c['nombre']}")
+    for e in eventos:
+        hora_str = f" a las {e['hora'][:5]}" if e.get('hora') else ""
+        estado = " (completado)" if e.get('confirmado') else ""
+        lineas.append(f"- [{e['id']}] {e['descripcion']}{hora_str}{estado}")
+    return "\n".join(lineas)
+
+def consulta_hoy() -> str:
+    hoy = date.today()
+    eventos = get_eventos_rango(hoy, hoy)
+    cumples = get_cumpleanos_rango(hoy, hoy)
+    return formatear_eventos(eventos, cumples, f"Hoy {hoy.strftime('%d/%m')}")
+
+def consulta_manana() -> str:
+    manana = date.today() + timedelta(days=1)
+    eventos = get_eventos_rango(manana, manana)
+    cumples = get_cumpleanos_rango(manana, manana)
+    return formatear_eventos(eventos, cumples, f"Manana {manana.strftime('%d/%m')}")
+
+def consulta_semana() -> str:
+    hoy = date.today()
+    fin = hoy + timedelta(days=7)
+    eventos = get_eventos_rango(hoy, fin)
+    cumples = get_cumpleanos_rango(hoy, fin)
+    return formatear_eventos(eventos, cumples, f"Proximos 7 dias ({hoy.strftime('%d/%m')} - {fin.strftime('%d/%m')})")
+
+def listar_cumpleanos() -> str:
+    hoy = date.today()
+    fin = hoy + timedelta(days=365)
+    proximos = get_cumpleanos_rango(hoy, fin)
+    todos = db_get('blasa_cumpleanos', 'order=fecha.asc')
+    if not todos:
+        return "No tienes cumpleanos guardados."
+    lineas = [f"Cumpleanos guardados ({len(todos)}):\n"]
+    prox_ids = {p['id']: p['dias_faltan'] for p in proximos} if proximos else {}
+    for c in todos:
+        mes_dia = c['fecha'][5:].replace('-', '/')
+        p = next((p for p in proximos if p['id'] == c['id']), None)
+        sufijo = f" (en {(p['fecha_cumple'] - hoy).days} dias)" if p else ""
+        lineas.append(f"- [{c['id']}] {c['nombre']}: {mes_dia}{sufijo}")
+    return "\n".join(lineas)
+
+# ─── SCHEDULER ────────────────────────────────────────────
 
 async def check_y_enviar(bot, blasa_chat_id: int):
-    """Llamado cada hora por el scheduler. Envía avisos a BLASA."""
+    if not blasa_chat_id:
+        return
     now = datetime.now(TZ)
-    today = date.today()
-    tomorrow = today + timedelta(days=1)
+    hora = now.hour
+    minuto = now.minute
+
+    # Solo entre 8:00 y 22:00
+    if hora < 8 or hora >= 22:
+        return
+
+    hoy = date.today()
+    manana = hoy + timedelta(days=1)
+    url, key = get_db()
 
     # Cumpleaños hoy a las 10:00
-    if now.hour == 10 and now.minute < 5:
-        for c in get_cumpleanos_hoy():
+    if hora == 10 and minuto < 6:
+        for c in get_cumpleanos_rango(hoy, hoy):
             await bot.send_message(
                 chat_id=blasa_chat_id,
-                text=f"Hoy es el cumpleanos de {c['nombre']}! No te olvides de felicitarle."
+                text="Hoy es el cumpleanos de " + c['nombre'] + "! No te olvides de felicitarle."
             )
 
-    # Eventos dia anterior — avisar por la mañana
-    if now.hour == 9 and now.minute < 5:
-        url, key = get_db()
+    # Aviso dia anterior a las 21:00
+    if hora == 21 and minuto < 6:
         r = requests.get(
-            f"{url}/rest/v1/blasa_eventos?fecha=eq.{tomorrow.isoformat()}&avisado_dia_antes=eq.false&confirmado=eq.false",
-            headers={"apikey": key, "Authorization": f"Bearer {key}"},
-            timeout=10
+            f"{url}/rest/v1/blasa_eventos?fecha=eq.{manana.isoformat()}&avisado_dia_antes=eq.false&confirmado=eq.false",
+            headers={"apikey": key, "Authorization": f"Bearer {key}"}, timeout=10
         )
-        eventos = r.json() if r.status_code == 200 else []
-        for e in eventos:
+        for e in (r.json() if r.status_code == 200 else []):
             hora_str = f" a las {e['hora'][:5]}" if e.get('hora') else ""
             await bot.send_message(
                 chat_id=blasa_chat_id,
-                text=f"Manana tienes: {e['descripcion']}{hora_str}"
+                text="Manana tienes: " + e['descripcion'] + hora_str
             )
             db_update('blasa_eventos', e['id'], {'avisado_dia_antes': True})
 
-    # Eventos de hoy — avisar cada 2h si no confirmados
+    # Eventos de hoy — cada 2h entre 8:00 y 22:00
     r2 = requests.get(
-        f"{url}/rest/v1/blasa_eventos?fecha=eq.{today.isoformat()}&confirmado=eq.false",
-        headers={"apikey": key, "Authorization": f"Bearer {key}"},
-        timeout=10
-    ) if 'url' in dir() else None
-
-    url2, key2 = get_db()
-    r2 = requests.get(
-        f"{url2}/rest/v1/blasa_eventos?fecha=eq.{today.isoformat()}&confirmado=eq.false",
-        headers={"apikey": key2, "Authorization": f"Bearer {key2}"},
-        timeout=10
+        f"{url}/rest/v1/blasa_eventos?fecha=eq.{hoy.isoformat()}&confirmado=eq.false",
+        headers={"apikey": key, "Authorization": f"Bearer {key}"}, timeout=10
     )
-    eventos_hoy = r2.json() if r2.status_code == 200 else []
-    for e in eventos_hoy:
+    for e in (r2.json() if r2.status_code == 200 else []):
         ultimo = e.get('ultimo_aviso')
+        debe_avisar = not ultimo
         if ultimo:
             ultimo_dt = datetime.fromisoformat(ultimo.replace('Z', '+00:00'))
-            if (now - ultimo_dt).total_seconds() < 7200:  # menos de 2h
-                continue
-        hora_str = f" a las {e['hora'][:5]}" if e.get('hora') else ""
-        await bot.send_message(
-            chat_id=blasa_chat_id,
-            text=f"Recuerda: {e['descripcion']}{hora_str}\n\nDi 'hecho {e['id']}' cuando lo hayas hecho."
-        )
-        db_update('blasa_eventos', e['id'], {'ultimo_aviso': now.isoformat()})
+            if (now - ultimo_dt).total_seconds() >= 7200:
+                debe_avisar = True
+        if debe_avisar:
+            hora_str = f" a las {e['hora'][:5]}" if e.get('hora') else ""
+            await bot.send_message(
+                chat_id=blasa_chat_id,
+                text="Recuerda: " + e['descripcion'] + hora_str + "\n\nDi 'hecho " + str(e['id']) + "' para completarlo o 'cancela " + str(e['id']) + "' para eliminarlo."
+            )
+            db_update('blasa_eventos', e['id'], {'ultimo_aviso': now.isoformat()})
 
 # ─── HANDLER PRINCIPAL ────────────────────────────────────
 
 async def handle(text: str, chat_id: int) -> str:
     text_lower = text.lower().strip()
 
-    # Confirmar evento hecho
-    m = re.match(r'hecho\s+(\d+)', text_lower)
+    # Completar evento: "hecho 3" o "completado 3"
+    m = re.match(r'(hecho|completado|listo|done)\s+(\d+)', text_lower)
     if m:
-        evento_id = int(m.group(1))
-        if db_update('blasa_eventos', evento_id, {'confirmado': True}):
-            return "Perfecto, evento marcado como hecho."
-        return "No encontre ese evento."
+        eid = int(m.group(2))
+        if db_update('blasa_eventos', eid, {'confirmado': True}):
+            return "Evento " + str(eid) + " marcado como completado."
+        return "No encontre el evento " + str(eid) + "."
 
-    # Consulta de hoy — solo si es una pregunta explícita
-    if any(k in text_lower for k in ['qué tengo hoy', 'que tengo hoy', 'agenda hoy', 'agenda de hoy']):
+    # Cancelar/borrar evento: "cancela 3" o "borra 3"
+    m = re.match(r'(cancela|borra|elimina|borrar|cancelar|eliminar)\s+(\d+)', text_lower)
+    if m:
+        eid = int(m.group(2))
+        if db_delete('blasa_eventos', eid) or db_delete('blasa_cumpleanos', eid):
+            return "Borrado el elemento con ID " + str(eid) + "."
+        return "No encontre nada con ID " + str(eid) + "."
+
+    # Consultas
+    if any(k in text_lower for k in ['qué tengo hoy','que tengo hoy','agenda hoy','agenda de hoy','eventos hoy']):
         return consulta_hoy()
-
-    # Consulta de mañana — solo si es una pregunta explícita
-    if any(k in text_lower for k in ['qué tengo mañana', 'que tengo mañana', 'agenda mañana', 'agenda de mañana']):
+    if any(k in text_lower for k in ['qué tengo mañana','que tengo mañana','agenda mañana','agenda de mañana','eventos mañana','eventos manana']):
         return consulta_manana()
-
-    # Borrar evento o cumpleaños
-    if any(k in text_lower for k in ['borra', 'elimina', 'borrar', 'eliminar']):
-        return await borrar(text)
-
-    # Añadir cumpleaños — detectar ampliamente
-    cumple_keywords = ['cumpleaños de', 'cumpleanos de', 'cumple de', 'cumple el',
-                       'nació', 'nacio', 'apunta el cumple', 'anota el cumple',
-                       'cumpleaños merche', 'cumpleaños ana', 'cumpleanos']
-    if any(k in text_lower for k in cumple_keywords):
-        return await anadir_cumpleanos(text)
-
-    # Listar cumpleaños
-    if any(k in text_lower for k in ['listar', 'ver todos', 'mis cumpleaños', 'mis cumpleanos', 'cumpleaños guardados']):
+    if any(k in text_lower for k in ['esta semana','la semana','próximos días','proximos dias','semana']):
+        return consulta_semana()
+    if any(k in text_lower for k in ['mis cumpleaños','mis cumpleanos','ver cumpleaños','listar cumple']):
         return listar_cumpleanos()
 
-    # Añadir evento
+    # Añadir cumpleaños
+    cumple_kw = ['cumpleaños de','cumpleanos de','cumple de','cumple el','apunta el cumple','nació','nacio']
+    if any(k in text_lower for k in cumple_kw):
+        return await anadir_cumpleanos(text)
+
+    # Añadir evento (todo lo demás)
     return await anadir_evento(text)
-
-def consulta_hoy() -> str:
-    eventos = get_eventos_hoy()
-    cumples = get_cumpleanos_hoy()
-    today = date.today()
-
-    if not eventos and not cumples:
-        return f"Hoy {today.strftime('%d/%m')} no tienes nada pendiente."
-
-    lineas = [f"Agenda de hoy {today.strftime('%d/%m')}:\n"]
-    if cumples:
-        for c in cumples:
-            lineas.append(f"Cumpleanos de {c['nombre']}")
-    if eventos:
-        for e in eventos:
-            hora_str = f" a las {e['hora'][:5]}" if e.get('hora') else ""
-            lineas.append(f"- {e['descripcion']}{hora_str} (ID: {e['id']})")
-    return "\n".join(lineas)
-
-def consulta_manana() -> str:
-    eventos = get_eventos_manana()
-    cumples = get_cumpleanos_manana()
-    tomorrow = date.today() + timedelta(days=1)
-
-    if not eventos and not cumples:
-        return f"Manana {tomorrow.strftime('%d/%m')} no tienes nada."
-
-    lineas = [f"Agenda de manana {tomorrow.strftime('%d/%m')}:\n"]
-    if cumples:
-        for c in cumples:
-            lineas.append(f"Cumpleanos de {c['nombre']}")
-    if eventos:
-        for e in eventos:
-            hora_str = f" a las {e['hora'][:5]}" if e.get('hora') else ""
-            lineas.append(f"- {e['descripcion']}{hora_str}")
-    return "\n".join(lineas)
-
-def listar_cumpleanos() -> str:
-    proximos = get_proximos_cumpleanos()
-    url, key = get_db()
-    r = requests.get(
-        f"{url}/rest/v1/blasa_cumpleanos?order=fecha.asc",
-        headers={"apikey": key, "Authorization": f"Bearer {key}"},
-        timeout=10
-    )
-    todos = r.json() if r.status_code == 200 else []
-    if not todos:
-        return "No tienes cumpleanos guardados."
-    lineas = [f"Cumpleanos guardados ({len(todos)}):\n"]
-    for c in todos:
-        fecha_display = c['fecha'][5:].replace('-', '/')
-        en_proximos = next((p for p in proximos if p['id'] == c['id']), None)
-        sufijo = f" (en {en_proximos['dias_faltan']} dias)" if en_proximos else ""
-        lineas.append(f"- {c['nombre']}: {fecha_display}{sufijo} (ID: {c['id']})")
-    return "\n".join(lineas)
-
-async def borrar(text: str) -> str:
-    m = re.search(r'\d+', text)
-    if not m:
-        return "Dime el ID a borrar. Usa 'ver cumpleanos' o 'qué tengo hoy' para ver los IDs."
-    id_borrar = int(m.group())
-    # Intentar borrar de ambas tablas
-    if db_delete('blasa_cumpleanos', id_borrar) or db_delete('blasa_eventos', id_borrar):
-        return f"Borrado correctamente (ID {id_borrar})."
-    return f"No encontre nada con ID {id_borrar}."
 
 async def anadir_cumpleanos(text: str) -> str:
     datos = await parse_cumpleanos(text)
     if not datos:
         return "No entendi. Dimelo asi:\n'Cumpleanos de Maria el 15 de marzo'"
-    fecha = datos['fecha']
-    if len(fecha) == 5:  # MM-DD
-        fecha_guardada = f"2000-{fecha}"  # año genérico
-    else:
-        fecha_guardada = fecha
+    fecha_guardada = f"2000-{datos['fecha']}"
     if db_insert('blasa_cumpleanos', {'nombre': datos['nombre'].capitalize(), 'fecha': fecha_guardada}):
-        mes_dia = fecha[-5:].replace('-', '/')
-        return f"Cumpleanos de {datos['nombre'].capitalize()} guardado: {mes_dia}"
+        return "Cumpleanos de " + datos['nombre'].capitalize() + " guardado: " + datos['fecha'].replace('-','/')
     return "Error guardando el cumpleanos."
 
 async def anadir_evento(text: str) -> str:
     datos = await parse_evento(text)
     if not datos:
-        return "No entendi la fecha. Dimelo asi:\n'Reunion con el director el martes a las 10'"
+        return "No entendi la fecha. Dimelo asi:\n'Comprar trofeos manana' o 'Reunion el martes a las 10'"
     evento = {
         'descripcion': datos['descripcion'].capitalize(),
         'fecha': datos['fecha'],
@@ -396,11 +303,7 @@ async def anadir_evento(text: str) -> str:
     if db_insert('blasa_eventos', evento):
         fecha_dt = datetime.strptime(datos['fecha'], '%Y-%m-%d')
         hora_str = f" a las {datos['hora'][:5]}" if datos.get('hora') else ""
-        return (
-            f"Evento guardado:\n"
-            f"{datos['descripcion'].capitalize()}\n"
-            f"{fecha_dt.strftime('%d/%m/%Y')}{hora_str}\n\n"
-            f"Te avisare el dia antes y el mismo dia cada 2h hasta que confirmes."
-        )
+        return ("Evento guardado:\n" + datos['descripcion'].capitalize() +
+                "\n" + fecha_dt.strftime('%d/%m/%Y') + hora_str +
+                "\n\nTe avisare el dia antes a las 21:00 y el mismo dia cada 2h (entre 8:00 y 22:00).")
     return "Error guardando el evento."
-    
