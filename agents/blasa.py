@@ -256,17 +256,17 @@ async def handle(text: str, chat_id: int) -> str:
     if any(k in text_lower for k in ['mañana', 'manana', 'agenda mañana']):
         return consulta_manana()
 
-    # Listar cumpleaños próximos
-    if any(k in text_lower for k in ['cumpleaños', 'cumpleanos', 'listar', 'ver todos']):
-        return listar_cumpleanos()
-
     # Borrar evento o cumpleaños
     if any(k in text_lower for k in ['borra', 'elimina', 'borrar', 'eliminar']):
         return await borrar(text)
 
-    # Añadir cumpleaños
-    if any(k in text_lower for k in ['cumple', 'cumpleaños de', 'cumpleanos de', 'nació', 'nacio']):
+    # Añadir cumpleaños — va antes de listar
+    if any(k in text_lower for k in ['cumpleaños de', 'cumpleanos de', 'cumple el', 'cumple de', 'nació', 'nacio']):
         return await anadir_cumpleanos(text)
+
+    # Listar cumpleaños
+    if any(k in text_lower for k in ['listar', 'ver todos', 'mis cumpleaños', 'mis cumpleanos', 'cumpleaños guardados']):
+        return listar_cumpleanos()
 
     # Añadir evento
     return await anadir_evento(text)
