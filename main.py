@@ -365,6 +365,23 @@ def main():
         id='blasa_check',
         replace_existing=True
     )
+
+    # Plan semanal Racing — cada lunes a las 9:00
+    async def racing_plan_wrapper():
+        import pytz
+        from datetime import datetime
+        now = datetime.now(pytz.timezone('Europe/Madrid'))
+        if now.weekday() == 0 and now.hour == 9 and now.minute < 6:
+            racing_chat = config.CANALES.get('racing', 0)
+            if racing_chat:
+                plan = await racing.plan_semanal()
+                await app.bot.send_message(chat_id=racing_chat, text="PLAN DE LA SEMANA\n\n" + plan)
+    scheduler.add_job(
+        racing_plan_wrapper,
+        trigger=IntervalTrigger(minutes=5),
+        id='racing_plan',
+        replace_existing=True
+    )
     scheduler.start()
 
     logger.info("Bot Maestro arrancado.")
