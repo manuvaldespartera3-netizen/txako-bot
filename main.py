@@ -318,20 +318,19 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_to_channel(context.bot, domain, response, chat_id)
 
 async def fire_reminders(bot):
-    pending = db.get_pending_reminders()
-    channels = db.get_channel_ids()
-    recordatorios_chat = channels.get('recordatorios', config.MY_CHAT_ID)
-    
-    for r in pending:
-        try:
-            await bot.send_message(
-                chat_id=recordatorios_chat,
-                text=f"⏰ *RECORDATORIO*\n\n{r['descripcion']}",
-                parse_mode='Markdown'
-            )
-            db.mark_reminder_sent(r['id'])
-        except Exception as e:
-            logger.error(f"Error enviando recordatorio {r['id']}: {e}")
+    try:
+        pending = db.get_pending_reminders()
+        channels = db.get_channel_ids()
+        recordatorios_chat = channels.get("recordatorios", config.MY_CHAT_ID)
+        for r in pending:
+            try:
+                await bot.send_message(chat_id=recordatorios_chat, text="Recordatorio: " + r["descripcion"])
+                db.mark_reminder_sent(r["id"])
+            except Exception as e:
+                logger.error(f"Error recordatorio: {e}")
+    except Exception as e:
+        logger.error(f"Error fire_reminders: {e}")
+
 
 # ─── MAIN ─────────────────────────────────────────────────
 
@@ -379,4 +378,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-        
+    
