@@ -127,6 +127,23 @@ async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     logger.info(f"Canal configurado: {domain} → {chat_id}")
 
+async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Limpia todos los estados pendientes."""
+    chat_id = update.effective_chat.id
+    from agents.gastos import pending_expenses
+    from agents.tutoria import pending_grades
+    limpiados = []
+    if chat_id in pending_expenses:
+        del pending_expenses[chat_id]
+        limpiados.append("gasto")
+    if chat_id in pending_grades:
+        del pending_grades[chat_id]
+        limpiados.append("nota")
+    if limpiados:
+        await update.message.reply_text(f"Reset hecho. Limpiado: {', '.join(limpiados)}.")
+    else:
+        await update.message.reply_text("No habia nada pendiente.")
+
 async def cmd_canales(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Muestra el estado de los canales configurados."""
     channels = db.get_channel_ids()
@@ -170,8 +187,44 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── Mostrar "escribiendo..." ───────────────────────────
     await context.bot.send_chat_action(chat_id, 'typing')
 
-    # ── Clasificar dominio ────────────────────────────────
-    domain = await router.classify(text)
+    # ── Detección por nombre de canal (máxima prioridad) ──
+    text_lower_check = text.lower()
+    domain = None
+    clean_text = text
+
+    canal_nombres = {
+        'blasa': 'blasa',
+        'manirrota': 'gastos',
+        'pitagorin': 'calculin', 'pitagorín': 'calculin',
+        'ef:': 'ef', 'educación física': 'ef', 'educacion fisica': 'ef',
+        'racing': 'racing', 'instagram': 'racing',
+        'tutoría': 'tutoria', 'tutoria': 'tutoria',
+    }
+    for nombre, dom in canal_nombres.items():
+        if text_lower_check.startswith(nombre):
+            domain = dom
+            clean_text = text[len(nombre):].lstrip(':').strip()
+            break
+
+    # ── Detección por palabras clave ──────────────────────
+    if not domain:
+        blasa_triggers = ['recuérdame','recuerda','recuerdame','avísame','avisame',
+                          'recordatorio','no me olvide','que no se me olvide',
+                          'cumpleaños de','cumpleanos de','apunta el cumple',
+                          'qué tengo hoy','que tengo hoy','agenda hoy',
+                          'qué tengo mañana','que tengo mañana','mis cumpleaños']
+        if any(k in text_lower_check for k in blasa_triggers):
+            domain = 'blasa'
+
+    if not domain:
+        ef_triggers = ['juego de','juegos de','actividad para','sesión de ef',
+                       'sin material','calentamiento','primaria']
+        if any(k in text_lower_check for k in ef_triggers):
+            domain = 'ef'
+
+    # ── Clasificar con router si no hay detección directa ─
+    if not domain:
+        domain = await router.classify(text)
 
     # ── Procesar con agente correcto ──────────────────────
     if domain == 'tutoria':
@@ -269,6 +322,7 @@ def main():
     app.add_handler(CommandHandler('start', cmd_start))
     app.add_handler(CommandHandler('setup', cmd_setup))
     app.add_handler(CommandHandler('canales', cmd_canales))
+    app.add_handler(CommandHandler('reset', cmd_reset))
 
     # Mensajes
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
@@ -304,3 +358,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+                                        
