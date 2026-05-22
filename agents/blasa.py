@@ -62,20 +62,43 @@ def db_delete(tabla: str, id: int) -> bool:
 
 async def parse_evento(text: str) -> dict | None:
     now = datetime.now(TZ)
+    manana = (now + timedelta(days=1)).strftime('%Y-%m-%d')
+    hoy = now.strftime('%Y-%m-%d')
     dias = ['lunes','martes','miércoles','jueves','viernes','sábado','domingo']
-    prompt = f"""Extrae la información de este evento o recordatorio.
-Fecha actual: {now.strftime('%Y-%m-%d')} ({dias[now.weekday()]})
+    dia_semana = dias[now.weekday()]
+    
+    # Calcular los próximos 7 días con su día de la semana
+    proximos = {}
+    for i in range(1, 8):
+        d = now + timedelta(days=i)
+        proximos[dias[d.weekday()]] = d.strftime('%Y-%m-%d')
+
+    proximos_str = "\n".join([f"- {k} = {v}" for k, v in proximos.items()])
+
+    prompt = f"""Extrae la información de este recordatorio o evento.
+HOY es: {hoy} ({dia_semana})
+MAÑANA es: {manana}
+Próximos días:
+{proximos_str}
+
 Texto: "{text}"
+
+Interpreta correctamente:
+- "mañana" = {manana}
+- "hoy" = {hoy}
+- "el lunes/martes/..." = usa la tabla de próximos días
+- "el próximo lunes" = el lunes de la tabla
+- "en X días" = suma X días a hoy
+- Si dice una hora como "a las 10" → hora = "10:00"
 
 Responde SOLO con JSON sin markdown:
 {{
-  "descripcion": "descripción clara del evento",
+  "descripcion": "descripción clara y corta de la tarea",
   "fecha": "YYYY-MM-DD",
-  "hora": "HH:MM o null si no se menciona",
+  "hora": "HH:MM o null",
   "valido": true
 }}
-Si no hay fecha clara: {{"valido": false}}
-Interpreta: "mañana", "el lunes", "el 15 de junio", etc."""
+Si no hay fecha: {{"valido": false}}"""
     try:
         raw = gemini.ask(prompt).strip().replace('```json','').replace('```','').strip()
         data = json.loads(raw)
