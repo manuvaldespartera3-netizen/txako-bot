@@ -277,12 +277,12 @@ async def handle(text: str, chat_id: int) -> str:
             return "Perfecto, evento marcado como hecho."
         return "No encontre ese evento."
 
-    # Consulta de hoy
-    if any(k in text_lower for k in ['qué tengo hoy', 'que tengo hoy', 'hoy', 'agenda hoy']):
+    # Consulta de hoy — solo si es una pregunta explícita
+    if any(k in text_lower for k in ['qué tengo hoy', 'que tengo hoy', 'agenda hoy', 'agenda de hoy']):
         return consulta_hoy()
 
-    # Consulta de mañana
-    if any(k in text_lower for k in ['mañana', 'manana', 'agenda mañana']):
+    # Consulta de mañana — solo si es una pregunta explícita
+    if any(k in text_lower for k in ['qué tengo mañana', 'que tengo mañana', 'agenda mañana', 'agenda de mañana']):
         return consulta_manana()
 
     # Borrar evento o cumpleaños
@@ -403,3 +403,4 @@ async def anadir_evento(text: str) -> str:
             f"Te avisare el dia antes y el mismo dia cada 2h hasta que confirmes."
         )
     return "Error guardando el evento."
+    
