@@ -85,22 +85,28 @@ Interpreta: "mañana", "el lunes", "el 15 de junio", etc."""
         return None
 
 async def parse_cumpleanos(text: str) -> dict | None:
-    prompt = f"""Extrae el nombre y la fecha de cumpleaños.
+    prompt = f"""Extrae el nombre y la fecha de cumpleaños de este texto.
 Texto: "{text}"
 
-Responde SOLO con JSON sin markdown:
-{{
-  "nombre": "nombre de la persona",
-  "fecha": "MM-DD (solo mes y dia, sin año)",
-  "valido": true
-}}
-Si falta nombre o fecha: {{"valido": false}}
-Ejemplos: "cumpleaños de María el 15 de marzo" → fecha: "03-15"
-"Ana cumple el 5 de julio" → fecha: "07-05" """
+Meses en español: enero=01, febrero=02, marzo=03, abril=04, mayo=05, junio=06,
+julio=07, agosto=08, septiembre=09, octubre=10, noviembre=11, diciembre=12
+
+Responde SOLO con JSON sin markdown, sin explicaciones:
+{{"nombre": "nombre de la persona", "mes": "01-12", "dia": "01-31", "valido": true}}
+Si no hay nombre o fecha clara: {{"valido": false}}
+
+Ejemplos:
+"cumpleanos de Merche el 10 de noviembre" → {{"nombre": "Merche", "mes": "11", "dia": "10", "valido": true}}
+"apunta el cumple de Ana el 5 julio" → {{"nombre": "Ana", "mes": "07", "dia": "05", "valido": true}}
+"cumpleanos Merche 10 noviembre" → {{"nombre": "Merche", "mes": "11", "dia": "10", "valido": true}}"""
     try:
         raw = gemini.ask(prompt).strip().replace('```json','').replace('```','').strip()
         data = json.loads(raw)
-        return data if data.get('valido') else None
+        if not data.get('valido'):
+            return None
+        mes = data['mes'].zfill(2)
+        dia = data['dia'].zfill(2)
+        return {'nombre': data['nombre'], 'fecha': f"{mes}-{dia}", 'valido': True}
     except Exception as e:
         logger.error(f"Error parseando cumpleaños: {e}")
         return None
@@ -260,8 +266,11 @@ async def handle(text: str, chat_id: int) -> str:
     if any(k in text_lower for k in ['borra', 'elimina', 'borrar', 'eliminar']):
         return await borrar(text)
 
-    # Añadir cumpleaños — va antes de listar
-    if any(k in text_lower for k in ['cumpleaños de', 'cumpleanos de', 'cumple el', 'cumple de', 'nació', 'nacio']):
+    # Añadir cumpleaños — detectar ampliamente
+    cumple_keywords = ['cumpleaños de', 'cumpleanos de', 'cumple de', 'cumple el',
+                       'nació', 'nacio', 'apunta el cumple', 'anota el cumple',
+                       'cumpleaños merche', 'cumpleaños ana', 'cumpleanos']
+    if any(k in text_lower for k in cumple_keywords):
         return await anadir_cumpleanos(text)
 
     # Listar cumpleaños
