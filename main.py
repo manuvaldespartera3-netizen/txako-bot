@@ -216,7 +216,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                           'recordatorio','no me olvide','que no se me olvide',
                           'cumpleaños de','cumpleanos de','apunta el cumple',
                           'qué tengo hoy','que tengo hoy','agenda hoy',
-                          'qué tengo mañana','que tengo mañana','mis cumpleaños']
+                          'qué tengo mañana','que tengo mañana','mis cumpleaños',
+                          'hecho ','cancela ','borra ','completado ','listo ','esta semana','la semana']
         if any(k in text_lower_check for k in blasa_triggers):
             domain = 'blasa'
 
@@ -357,10 +358,11 @@ def main():
         replace_existing=True
     )
     # Scheduler BLASA (cada 5 minutos)
+    async def blasa_check_wrapper():
+        await blasa.check_y_enviar(app.bot, config.CANALES.get('blasa', 0))
     scheduler.add_job(
-        blasa.check_y_enviar,
+        blasa_check_wrapper,
         trigger=IntervalTrigger(minutes=5),
-        kwargs={'bot': app.bot, 'blasa_chat_id': config.CANALES.get('blasa', 0)},
         id='blasa_check',
         replace_existing=True
     )
@@ -377,4 +379,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-                                        
+        
