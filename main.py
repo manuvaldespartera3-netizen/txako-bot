@@ -187,26 +187,30 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── Mostrar "escribiendo..." ───────────────────────────
     await context.bot.send_chat_action(chat_id, 'typing')
 
-    # ── Detección por nombre de canal (máxima prioridad) ──
-    text_lower_check = text.lower()
+    # ── MÁXIMA PRIORIDAD: nombre del canal al inicio ──────
+    text_lower_check = text.lower().strip()
     domain = None
     clean_text = text
 
-    canal_nombres = {
-        'blasa': 'blasa',
-        'manirrota': 'gastos',
-        'pitagorin': 'calculin', 'pitagorín': 'calculin',
-        'ef:': 'ef', 'educación física': 'ef', 'educacion fisica': 'ef',
-        'racing': 'racing', 'instagram': 'racing',
-        'tutoría': 'tutoria', 'tutoria': 'tutoria',
-    }
-    for nombre, dom in canal_nombres.items():
+    # Si empieza por el nombre de un canal → va ahí SIN EXCEPCIONES
+    canal_nombres = [
+        ('blasa', 'blasa'),
+        ('manirrota', 'gastos'),
+        ('pitagorín', 'calculin'),
+        ('pitagorin', 'calculin'),
+        ('ef,', 'ef'),
+        ('ef:', 'ef'),
+        ('racing', 'racing'),
+        ('tutoría', 'tutoria'),
+        ('tutoria', 'tutoria'),
+    ]
+    for nombre, dom in canal_nombres:
         if text_lower_check.startswith(nombre):
             domain = dom
-            clean_text = text[len(nombre):].lstrip(':').strip()
+            clean_text = text[len(nombre):].lstrip(',:').strip()
             break
 
-    # ── Detección por palabras clave ──────────────────────
+    # ── Solo si no hay canal explícito, usar palabras clave
     if not domain:
         blasa_triggers = ['recuérdame','recuerda','recuerdame','avísame','avisame',
                           'recordatorio','no me olvide','que no se me olvide',
@@ -218,11 +222,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not domain:
         ef_triggers = ['juego de','juegos de','actividad para','sesión de ef',
-                       'sin material','calentamiento','primaria']
+                       'sin material','calentamiento']
         if any(k in text_lower_check for k in ef_triggers):
             domain = 'ef'
 
-    # ── Clasificar con router si no hay detección directa ─
+    # ── Router solo como último recurso ───────────────────
     if not domain:
         domain = await router.classify(text)
 
@@ -274,9 +278,24 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_to_channel(context.bot, 'gastos', response, chat_id)
         return
 
-    # Sin pendiente, clasificar normalmente
-    domain = await router.classify(transcription)
-    
+    # Sin pendiente — detectar canal por nombre primero
+    trans_lower = transcription.lower().strip()
+    domain = None
+    clean_trans = transcription
+    canal_nombres = [
+        ('blasa', 'blasa'), ('manirrota', 'gastos'),
+        ('pitagorín', 'calculin'), ('pitagorin', 'calculin'),
+        ('racing', 'racing'), ('tutoría', 'tutoria'), ('tutoria', 'tutoria'),
+    ]
+    for nombre, dom in canal_nombres:
+        if trans_lower.startswith(nombre):
+            domain = dom
+            clean_trans = transcription[len(nombre):].lstrip(',:').strip()
+            break
+    if not domain:
+        domain = await router.classify(transcription)
+    transcription = clean_trans
+
     if domain == 'tutoria':
         response = await tutoria.handle(transcription, chat_id, is_voice=True)
     elif domain == 'ef':
