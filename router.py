@@ -14,6 +14,7 @@ Clasifica el mensaje en UNO de estos dominios:
 - "recordatorios": Recordar algo, avisar, que no se olvide, agenda, fechas, horas
 - "racing": Instagram, contenido escuela de fútbol, captions, guiones, Reels, Racing Club
 - "gastos": Gastos, compras, euros, dinero, pagos, supermercado, precio, coste, cervezas
+- "blasa": Recordatorios, eventos, agenda, cumpleaños, qué tengo hoy, avisar, que no se olvide
 - "general": Cualquier otra cosa
 
 Responde SOLO con JSON sin markdown:
