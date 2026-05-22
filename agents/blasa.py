@@ -1,309 +1,380 @@
 """
-Agente BLASA - Recordatorios, eventos y cumpleaños.
-- Eventos puntuales: avisa el día anterior a las 21:00, luego cada 2h entre 8:00-22:00
-- Cumpleaños: avisa el día del cumple a las 10:00
-- Consultas: hoy, mañana, esta semana
-- Gestión: hecho ID, cancela ID, borra ID
+Bot Maestro — Txako
+Recibe TODOS los mensajes de Txako y los enruta al agente correcto.
+Las respuestas van al chat especializado correspondiente.
 """
-import json, logging, os, re, requests
-import gemini
-from datetime import datetime, date, timedelta
+import asyncio, logging
+from datetime import datetime
 import pytz
 
+from telegram import Update
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler,
+    ContextTypes, filters
+)
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+import gemini
+
+import config, db, router
+from agents import tutoria, ef, recordatorios, racing, gastos, calculin, blasa
+from agents.tutoria import pending_grades
+from agents.gastos import pending_expenses
+
+logging.basicConfig(
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 TZ = pytz.timezone('Europe/Madrid')
 
-def get_db():
-    return os.environ.get('SUPABASE_URL',''), os.environ.get('SUPABASE_KEY','')
+# ─── ENVÍO A CHAT ESPECIALIZADO ───────────────────────────
 
-def db_get(tabla: str, query: str = '') -> list:
-    url, key = get_db()
-    r = requests.get(
-        f"{url}/rest/v1/{tabla}?{query}",
-        headers={"apikey": key, "Authorization": f"Bearer {key}"},
-        timeout=10
-    )
-    return r.json() if r.status_code == 200 else []
+async def send_to_channel(bot, domain: str, text: str, fallback_chat_id: int = None):
+    """Envía la respuesta al chat del dominio correcto."""
+    chat_id = config.CANALES.get(domain, 0)
+    
+    if not chat_id:
+        # Sin canal configurado → responde donde escribió el usuario
+        target = fallback_chat_id or config.MY_CHAT_ID
+        logger.info(f"Canal '{domain}' no configurado. Enviando a {target}.")
+        await bot.send_message(chat_id=target, text=text)
+        return
 
-def db_insert(tabla: str, data: dict) -> bool:
-    url, key = get_db()
-    r = requests.post(
-        f"{url}/rest/v1/{tabla}",
-        headers={"apikey": key, "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json", "Prefer": "return=minimal"},
-        json=data, timeout=10
-    )
-    return r.status_code in [200, 201]
-
-def db_update(tabla: str, id: int, data: dict) -> bool:
-    url, key = get_db()
-    r = requests.patch(
-        f"{url}/rest/v1/{tabla}?id=eq.{id}",
-        headers={"apikey": key, "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json"},
-        json=data, timeout=10
-    )
-    return r.status_code in [200, 204]
-
-def db_delete(tabla: str, id: int) -> bool:
-    url, key = get_db()
-    r = requests.delete(
-        f"{url}/rest/v1/{tabla}?id=eq.{id}",
-        headers={"apikey": key, "Authorization": f"Bearer {key}"},
-        timeout=10
-    )
-    return r.status_code in [200, 204]
-
-# ─── PARSERS ─────────────────────────────────────────────
-
-async def parse_evento(text: str) -> dict | None:
-    now = datetime.now(TZ)
-    dias = ['lunes','martes','miércoles','jueves','viernes','sábado','domingo']
-    proximos = {}
-    for i in range(1, 8):
-        d = now + timedelta(days=i)
-        proximos[dias[d.weekday()]] = d.strftime('%Y-%m-%d')
-    proximos_str = "\n".join([f"- {k} = {v}" for k, v in proximos.items()])
-
-    prompt = f"""Extrae la información de este recordatorio o evento.
-HOY es: {now.strftime('%Y-%m-%d')} ({dias[now.weekday()]})
-MAÑANA es: {(now + timedelta(days=1)).strftime('%Y-%m-%d')}
-Próximos días:
-{proximos_str}
-
-Texto: "{text}"
-
-Responde SOLO con JSON sin markdown:
-{{"descripcion": "tarea clara y corta", "fecha": "YYYY-MM-DD", "hora": "HH:MM o null", "valido": true}}
-Si no hay fecha: {{"valido": false}}"""
-    try:
-        raw = gemini.ask(prompt).strip().replace('```json','').replace('```','').strip()
-        data = json.loads(raw)
-        return data if data.get('valido') else None
-    except Exception as e:
-        logger.error(f"Error parseando evento: {e}")
-        return None
-
-async def parse_cumpleanos(text: str) -> dict | None:
-    prompt = f"""Extrae el nombre y la fecha de cumpleaños.
-Texto: "{text}"
-Meses: enero=01, febrero=02, marzo=03, abril=04, mayo=05, junio=06,
-julio=07, agosto=08, septiembre=09, octubre=10, noviembre=11, diciembre=12
-
-Responde SOLO con JSON sin markdown:
-{{"nombre": "nombre", "mes": "01-12", "dia": "01-31", "valido": true}}
-Si falta nombre o fecha: {{"valido": false}}"""
-    try:
-        raw = gemini.ask(prompt).strip().replace('```json','').replace('```','').strip()
-        data = json.loads(raw)
-        if not data.get('valido'):
-            return None
-        mes = str(data['mes']).zfill(2)
-        dia = str(data['dia']).zfill(2)
-        return {'nombre': data['nombre'], 'fecha': f"{mes}-{dia}", 'valido': True}
-    except Exception as e:
-        logger.error(f"Error parseando cumpleaños: {e}")
-        return None
-
-# ─── CONSULTAS ────────────────────────────────────────────
-
-def get_eventos_rango(desde: date, hasta: date, solo_pendientes: bool = True) -> list:
-    url, key = get_db()
-    query = f"fecha=gte.{desde.isoformat()}&fecha=lte.{hasta.isoformat()}&order=fecha.asc,hora.asc"
-    if solo_pendientes:
-        query += "&confirmado=eq.false"
-    r = requests.get(
-        f"{url}/rest/v1/blasa_eventos?{query}",
-        headers={"apikey": key, "Authorization": f"Bearer {key}"},
-        timeout=10
-    )
-    return r.json() if r.status_code == 200 else []
-
-def get_cumpleanos_rango(desde: date, hasta: date) -> list:
-    todos = db_get('blasa_cumpleanos', 'order=fecha.asc')
-    result = []
-    for c in todos:
+    # Dividir mensajes largos (límite Telegram 4096 chars)
+    chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
+    for chunk in chunks:
         try:
-            mes_dia = c['fecha'][5:] if len(c['fecha']) > 5 else c['fecha']
-            mes = int(mes_dia[:2])
-            dia = int(mes_dia[3:])
-            for año in [desde.year, desde.year + 1]:
-                cumple = date(año, mes, dia)
-                if desde <= cumple <= hasta:
-                    result.append({**c, 'fecha_cumple': cumple})
-        except:
-            pass
-    return sorted(result, key=lambda x: x['fecha_cumple'])
+            await bot.send_message(chat_id=chat_id, text=chunk)
+        except Exception as e:
+            logger.error(f"Error enviando mensaje: {e}")
 
-def formatear_eventos(eventos: list, cumples: list, titulo: str) -> str:
-    if not eventos and not cumples:
-        return f"{titulo}: no tienes nada."
-    lineas = [f"{titulo}:\n"]
-    for c in cumples:
-        lineas.append(f"Cumpleanos de {c['nombre']}")
-    for e in eventos:
-        hora_str = f" a las {e['hora'][:5]}" if e.get('hora') else ""
-        estado = " (completado)" if e.get('confirmado') else ""
-        lineas.append(f"- [{e['id']}] {e['descripcion']}{hora_str}{estado}")
-    return "\n".join(lineas)
+# ─── TRANSCRIPCIÓN DE VOZ ─────────────────────────────────
 
-def consulta_hoy() -> str:
-    hoy = date.today()
-    eventos = get_eventos_rango(hoy, hoy)
-    cumples = get_cumpleanos_rango(hoy, hoy)
-    return formatear_eventos(eventos, cumples, f"Hoy {hoy.strftime('%d/%m')}")
-
-def consulta_manana() -> str:
-    manana = date.today() + timedelta(days=1)
-    eventos = get_eventos_rango(manana, manana)
-    cumples = get_cumpleanos_rango(manana, manana)
-    return formatear_eventos(eventos, cumples, f"Manana {manana.strftime('%d/%m')}")
-
-def consulta_semana() -> str:
-    hoy = date.today()
-    fin = hoy + timedelta(days=7)
-    eventos = get_eventos_rango(hoy, fin)
-    cumples = get_cumpleanos_rango(hoy, fin)
-    return formatear_eventos(eventos, cumples, f"Proximos 7 dias ({hoy.strftime('%d/%m')} - {fin.strftime('%d/%m')})")
-
-def listar_cumpleanos() -> str:
-    hoy = date.today()
-    fin = hoy + timedelta(days=365)
-    proximos = get_cumpleanos_rango(hoy, fin)
-    todos = db_get('blasa_cumpleanos', 'order=fecha.asc')
-    if not todos:
-        return "No tienes cumpleanos guardados."
-    lineas = [f"Cumpleanos guardados ({len(todos)}):\n"]
-    prox_ids = {p['id']: p['dias_faltan'] for p in proximos} if proximos else {}
-    for c in todos:
-        mes_dia = c['fecha'][5:].replace('-', '/')
-        p = next((p for p in proximos if p['id'] == c['id']), None)
-        sufijo = f" (en {(p['fecha_cumple'] - hoy).days} dias)" if p else ""
-        lineas.append(f"- [{c['id']}] {c['nombre']}: {mes_dia}{sufijo}")
-    return "\n".join(lineas)
-
-# ─── SCHEDULER ────────────────────────────────────────────
-
-async def check_y_enviar(bot, blasa_chat_id: int):
-    if not blasa_chat_id:
-        return
-    now = datetime.now(TZ)
-    hora = now.hour
-    minuto = now.minute
-
-    # Solo entre 8:00 y 22:00
-    if hora < 8 or hora >= 22:
-        return
-
-    hoy = date.today()
-    manana = hoy + timedelta(days=1)
-    url, key = get_db()
-
-    # Cumpleaños hoy a las 10:00
-    if hora == 10 and minuto < 6:
-        for c in get_cumpleanos_rango(hoy, hoy):
-            await bot.send_message(
-                chat_id=blasa_chat_id,
-                text="Hoy es el cumpleanos de " + c['nombre'] + "! No te olvides de felicitarle."
-            )
-
-    # Aviso dia anterior a las 21:00
-    if hora == 21 and minuto < 6:
-        r = requests.get(
-            f"{url}/rest/v1/blasa_eventos?fecha=eq.{manana.isoformat()}&avisado_dia_antes=eq.false&confirmado=eq.false",
-            headers={"apikey": key, "Authorization": f"Bearer {key}"}, timeout=10
+async def transcribe_voice(bot, file_id: str) -> str | None:
+    """Descarga el audio y lo transcribe con Groq Whisper."""
+    import requests, os
+    try:
+        file = await bot.get_file(file_id)
+        file_bytes = await file.download_as_bytearray()
+        
+        groq_key = os.environ.get('GROQ_API_KEY', '')
+        response = requests.post(
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {groq_key}"},
+            files={"file": ("audio.ogg", bytes(file_bytes), "audio/ogg")},
+            data={"model": "whisper-large-v3", "language": "es"},
+            timeout=30
         )
-        for e in (r.json() if r.status_code == 200 else []):
-            hora_str = f" a las {e['hora'][:5]}" if e.get('hora') else ""
-            await bot.send_message(
-                chat_id=blasa_chat_id,
-                text="Manana tienes: " + e['descripcion'] + hora_str
-            )
-            db_update('blasa_eventos', e['id'], {'avisado_dia_antes': True})
+        data = response.json()
+        return data.get("text", "").strip()
+    except Exception as e:
+        logger.error(f"Error transcribiendo voz: {e}")
+        return None
 
-    # Eventos de hoy — cada 2h entre 8:00 y 22:00
-    r2 = requests.get(
-        f"{url}/rest/v1/blasa_eventos?fecha=eq.{hoy.isoformat()}&confirmado=eq.false",
-        headers={"apikey": key, "Authorization": f"Bearer {key}"}, timeout=10
+# ─── HANDLERS ─────────────────────────────────────────────
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != config.MY_CHAT_ID:
+        # Puede ser uno de los chats especializados haciendo /setup
+        return
+    channels = db.get_channel_ids()
+    configured = [d for d in config.DOMAINS if d in channels]
+    missing = [d for d in config.DOMAINS if d not in channels]
+    
+    msg = (
+        "🤖 *Bot Maestro activo*\n\n"
+        f"Escríbeme lo que necesites y lo envío al chat correcto.\n\n"
     )
-    for e in (r2.json() if r2.status_code == 200 else []):
-        ultimo = e.get('ultimo_aviso')
-        debe_avisar = not ultimo
-        if ultimo:
-            ultimo_dt = datetime.fromisoformat(ultimo.replace('Z', '+00:00'))
-            if (now - ultimo_dt).total_seconds() >= 7200:
-                debe_avisar = True
-        if debe_avisar:
-            hora_str = f" a las {e['hora'][:5]}" if e.get('hora') else ""
+    if configured:
+        msg += f"✅ Canales configurados: {', '.join(configured)}\n"
+    if missing:
+        msg += (
+            f"⚠️ Sin configurar: {', '.join(missing)}\n\n"
+            "Para configurar un canal:\n"
+            "1. Crea un grupo en Telegram\n"
+            "2. Añade este bot al grupo\n"
+            "3. Escribe en ese grupo: `/setup ef` (o tutoria, recordatorios, racing, general)"
+        )
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Se ejecuta en los chats especializados para registrarlos."""
+    if not context.args:
+        await update.message.reply_text(
+            "Uso: `/setup dominio`\nDominios: ef, tutoria, recordatorios, racing, gastos, general",
+            parse_mode='Markdown'
+        )
+        return
+    # Buscar dominio en todos los args (por si viene con @bot delante)
+    domain = None
+    for arg in context.args:
+        candidate = arg.lower().strip()
+        if candidate in config.DOMAINS:
+            domain = candidate
+            break
+    if not domain:
+        await update.message.reply_text(f"Dominio inválido. Usa uno de: {', '.join(config.DOMAINS)}")
+        return
+    
+    chat_id = update.effective_chat.id
+    db.save_channel(domain, chat_id)
+    
+    emoji = {'ef':'🏃','tutoria':'📋','recordatorios':'⏰','racing':'📸','general':'🧠'}.get(domain,'💬')
+    await update.message.reply_text(
+        f"{emoji} *Canal {domain.upper()} configurado*\n\nEste chat recibirá todas las respuestas de {domain}.",
+        parse_mode='Markdown'
+    )
+    logger.info(f"Canal configurado: {domain} → {chat_id}")
+
+async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Limpia todos los estados pendientes."""
+    chat_id = update.effective_chat.id
+    from agents.gastos import pending_expenses
+    from agents.tutoria import pending_grades
+    limpiados = []
+    if chat_id in pending_expenses:
+        del pending_expenses[chat_id]
+        limpiados.append("gasto")
+    if chat_id in pending_grades:
+        del pending_grades[chat_id]
+        limpiados.append("nota")
+    if limpiados:
+        await update.message.reply_text(f"Reset hecho. Limpiado: {', '.join(limpiados)}.")
+    else:
+        await update.message.reply_text("No habia nada pendiente.")
+
+async def cmd_canales(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Muestra el estado de los canales configurados."""
+    channels = db.get_channel_ids()
+    emoji_map = {'ef':'🏃','tutoria':'📋','recordatorios':'⏰','racing':'📸','gastos':'💰','calculin':'🧮','blasa':'🔔','general':'🧠'}
+    msg = "📡 *Estado de canales*\n\n"
+    for domain in config.DOMAINS:
+        emoji = emoji_map.get(domain,'💬')
+        if domain in channels:
+            msg += f"{emoji} {domain}: ✅ configurado\n"
+        else:
+            msg += f"{emoji} {domain}: ❌ sin configurar\n"
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Procesa mensajes de texto del chat maestro."""
+    if not update.message or not update.message.text:
+        return
+    if update.effective_chat.id != config.MY_CHAT_ID:
+        return  # Ignorar mensajes en chats de respuesta
+
+    text = update.message.text
+    chat_id = update.effective_chat.id
+
+    # ── Confirmación de nota pendiente ────────────────────
+    if chat_id in pending_grades:
+        if text.lower().strip() in ['sí', 'si', 'yes', 'ok', '✅', 'confirmar', 'correcto']:
+            response = await tutoria.confirm_grade(chat_id)
+            await send_to_channel(context.bot, 'tutoria', response, update.effective_chat.id)
+            return
+        elif text.lower().strip() in ['no', 'cancelar', 'cancel', '❌']:
+            response = tutoria.cancel_grade(chat_id)
+            await send_to_channel(context.bot, 'tutoria', response, update.effective_chat.id)
+            return
+
+    # ── Gasto en construcción (campos pendientes) ─────────
+    if chat_id in pending_expenses:
+        response = await gastos.handle(text, chat_id)
+        await send_to_channel(context.bot, 'gastos', response, update.effective_chat.id)
+        return
+
+    # ── Mostrar "escribiendo..." ───────────────────────────
+    await context.bot.send_chat_action(chat_id, 'typing')
+
+    # ── MÁXIMA PRIORIDAD: nombre del canal al inicio ──────
+    text_lower_check = text.lower().strip()
+    domain = None
+    clean_text = text
+
+    # Si empieza por el nombre de un canal → va ahí SIN EXCEPCIONES
+    canal_nombres = [
+        ('blasa', 'blasa'),
+        ('manirrota', 'gastos'),
+        ('pitagorín', 'calculin'),
+        ('pitagorin', 'calculin'),
+        ('ef,', 'ef'),
+        ('ef:', 'ef'),
+        ('racing', 'racing'),
+        ('tutoría', 'tutoria'),
+        ('tutoria', 'tutoria'),
+    ]
+    for nombre, dom in canal_nombres:
+        if text_lower_check.startswith(nombre):
+            domain = dom
+            clean_text = text[len(nombre):].lstrip(',:').strip()
+            break
+
+    # ── Solo si no hay canal explícito, usar palabras clave
+    if not domain:
+        blasa_triggers = ['recuérdame','recuerda','recuerdame','avísame','avisame',
+                          'recordatorio','no me olvide','que no se me olvide',
+                          'cumpleaños de','cumpleanos de','apunta el cumple',
+                          'qué tengo hoy','que tengo hoy','agenda hoy',
+                          'qué tengo mañana','que tengo mañana','mis cumpleaños',
+                          'hecho ','cancela ','borra ','completado ','listo ','esta semana','la semana']
+        if any(k in text_lower_check for k in blasa_triggers):
+            domain = 'blasa'
+
+    if not domain:
+        ef_triggers = ['juego de','juegos de','actividad para','sesión de ef',
+                       'sin material','calentamiento']
+        if any(k in text_lower_check for k in ef_triggers):
+            domain = 'ef'
+
+    # ── Router solo como último recurso ───────────────────
+    if not domain:
+        domain = await router.classify(text)
+
+    # ── Procesar con agente correcto ──────────────────────
+    if domain == 'tutoria':
+        response = await tutoria.handle(clean_text, chat_id)
+    elif domain == 'ef':
+        response = await ef.handle(clean_text)
+    elif domain == 'recordatorios':
+        response = await recordatorios.handle(clean_text, chat_id)
+    elif domain == 'racing':
+        response = await racing.handle(clean_text)
+    elif domain == 'gastos':
+        response = await gastos.handle(clean_text, chat_id)
+    elif domain == 'calculin':
+        response = await calculin.handle(clean_text)
+    elif domain == 'blasa':
+        response = await blasa.handle(clean_text, chat_id)
+    else:
+        response = gemini.ask("Eres el asistente personal de Txako. Responde en español.\n\n" + clean_text)
+        domain = 'general'
+
+    # ── Enviar al canal correcto ───────────────────────────
+    await send_to_channel(context.bot, domain, response, update.effective_chat.id)
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Transcribe nota de voz y procesa como texto."""
+    if update.effective_chat.id != config.MY_CHAT_ID:
+        return
+
+    await context.bot.send_chat_action(update.effective_chat.id, 'typing')
+    
+    voice = update.message.voice or update.message.audio
+    if not voice:
+        return
+
+    transcription = await transcribe_voice(context.bot, voice.file_id)
+    if not transcription:
+        await update.message.reply_text("No pude transcribir el audio. Intentalo de nuevo.")
+        return
+
+    await update.message.reply_text(f"Escuche: {transcription}")
+
+    chat_id = update.effective_chat.id
+
+    # Si hay gasto pendiente, el audio va SIEMPRE al agente de gastos
+    if chat_id in pending_expenses:
+        response = await gastos.handle(transcription, chat_id)
+        await send_to_channel(context.bot, 'gastos', response, chat_id)
+        return
+
+    # Sin pendiente — detectar canal por nombre primero
+    trans_lower = transcription.lower().strip()
+    domain = None
+    clean_trans = transcription
+    canal_nombres = [
+        ('blasa', 'blasa'), ('manirrota', 'gastos'),
+        ('pitagorín', 'calculin'), ('pitagorin', 'calculin'),
+        ('racing', 'racing'), ('tutoría', 'tutoria'), ('tutoria', 'tutoria'),
+    ]
+    for nombre, dom in canal_nombres:
+        if trans_lower.startswith(nombre):
+            domain = dom
+            clean_trans = transcription[len(nombre):].lstrip(',:').strip()
+            break
+    if not domain:
+        domain = await router.classify(transcription)
+    transcription = clean_trans
+
+    if domain == 'tutoria':
+        response = await tutoria.handle(transcription, chat_id, is_voice=True)
+    elif domain == 'ef':
+        response = await ef.handle(transcription)
+    elif domain == 'recordatorios':
+        response = await recordatorios.handle(transcription, chat_id)
+    elif domain == 'racing':
+        response = await racing.handle(transcription)
+    elif domain == 'gastos':
+        response = await gastos.handle(transcription, chat_id)
+    elif domain == 'calculin':
+        response = await calculin.handle(transcription)
+    elif domain == 'blasa':
+        response = await blasa.handle(transcription, chat_id)
+    else:
+        response = gemini.ask("Eres el asistente personal de Txako. Responde en espanol.\n\n" + transcription)
+        domain = 'general'
+
+    await send_to_channel(context.bot, domain, response, chat_id)
+
+async def fire_reminders(bot):
+    pending = db.get_pending_reminders()
+    channels = db.get_channel_ids()
+    recordatorios_chat = channels.get('recordatorios', config.MY_CHAT_ID)
+    
+    for r in pending:
+        try:
             await bot.send_message(
-                chat_id=blasa_chat_id,
-                text="Recuerda: " + e['descripcion'] + hora_str + "\n\nDi 'hecho " + str(e['id']) + "' para completarlo o 'cancela " + str(e['id']) + "' para eliminarlo."
+                chat_id=recordatorios_chat,
+                text=f"⏰ *RECORDATORIO*\n\n{r['descripcion']}",
+                parse_mode='Markdown'
             )
-            db_update('blasa_eventos', e['id'], {'ultimo_aviso': now.isoformat()})
+            db.mark_reminder_sent(r['id'])
+        except Exception as e:
+            logger.error(f"Error enviando recordatorio {r['id']}: {e}")
 
-# ─── HANDLER PRINCIPAL ────────────────────────────────────
+# ─── MAIN ─────────────────────────────────────────────────
 
-async def handle(text: str, chat_id: int) -> str:
-    text_lower = text.lower().strip()
+def main():
+    app = Application.builder().token(config.TELEGRAM_TOKEN).build()
 
-    # Completar evento: "hecho 3" o "completado 3"
-    m = re.match(r'(hecho|completado|listo|done)\s+(\d+)', text_lower)
-    if m:
-        eid = int(m.group(2))
-        if db_update('blasa_eventos', eid, {'confirmado': True}):
-            return "Evento " + str(eid) + " marcado como completado."
-        return "No encontre el evento " + str(eid) + "."
+    # Comandos
+    app.add_handler(CommandHandler('start', cmd_start))
+    app.add_handler(CommandHandler('setup', cmd_setup))
+    app.add_handler(CommandHandler('canales', cmd_canales))
+    app.add_handler(CommandHandler('reset', cmd_reset))
 
-    # Cancelar/borrar evento: "cancela 3" o "borra 3"
-    m = re.match(r'(cancela|borra|elimina|borrar|cancelar|eliminar)\s+(\d+)', text_lower)
-    if m:
-        eid = int(m.group(2))
-        if db_delete('blasa_eventos', eid) or db_delete('blasa_cumpleanos', eid):
-            return "Borrado el elemento con ID " + str(eid) + "."
-        return "No encontre nada con ID " + str(eid) + "."
+    # Mensajes
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
 
-    # Consultas
-    if any(k in text_lower for k in ['qué tengo hoy','que tengo hoy','agenda hoy','agenda de hoy','eventos hoy']):
-        return consulta_hoy()
-    if any(k in text_lower for k in ['qué tengo mañana','que tengo mañana','agenda mañana','agenda de mañana','eventos mañana','eventos manana']):
-        return consulta_manana()
-    if any(k in text_lower for k in ['esta semana','la semana','próximos días','proximos dias','semana']):
-        return consulta_semana()
-    if any(k in text_lower for k in ['mis cumpleaños','mis cumpleanos','ver cumpleaños','listar cumple']):
-        return listar_cumpleanos()
+    # Scheduler recordatorios (cada minuto)
+    scheduler = AsyncIOScheduler(timezone=TZ)
+    scheduler.add_job(
+        fire_reminders,
+        trigger=IntervalTrigger(minutes=1),
+        kwargs={'bot': app.bot},
+        id='reminders',
+        replace_existing=True
+    )
+    # Scheduler BLASA (cada 5 minutos)
+    scheduler.add_job(
+        blasa.check_y_enviar,
+        trigger=IntervalTrigger(minutes=5),
+        kwargs={'bot': app.bot, 'blasa_chat_id': config.CANALES.get('blasa', 0)},
+        id='blasa_check',
+        replace_existing=True
+    )
+    scheduler.start()
 
-    # Añadir cumpleaños
-    cumple_kw = ['cumpleaños de','cumpleanos de','cumple de','cumple el','apunta el cumple','nació','nacio']
-    if any(k in text_lower for k in cumple_kw):
-        return await anadir_cumpleanos(text)
+    logger.info("Bot Maestro arrancado.")
 
-    # Añadir evento (todo lo demás)
-    return await anadir_evento(text)
+    # Arrancar Pitagorin en proceso separado
+    import subprocess, sys
+    subprocess.Popen([sys.executable, "pitagorin_bot.py"])
+    logger.info("Pitagorin arrancado.")
 
-async def anadir_cumpleanos(text: str) -> str:
-    datos = await parse_cumpleanos(text)
-    if not datos:
-        return "No entendi. Dimelo asi:\n'Cumpleanos de Maria el 15 de marzo'"
-    fecha_guardada = f"2000-{datos['fecha']}"
-    if db_insert('blasa_cumpleanos', {'nombre': datos['nombre'].capitalize(), 'fecha': fecha_guardada}):
-        return "Cumpleanos de " + datos['nombre'].capitalize() + " guardado: " + datos['fecha'].replace('-','/')
-    return "Error guardando el cumpleanos."
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
-async def anadir_evento(text: str) -> str:
-    datos = await parse_evento(text)
-    if not datos:
-        return "No entendi la fecha. Dimelo asi:\n'Comprar trofeos manana' o 'Reunion el martes a las 10'"
-    evento = {
-        'descripcion': datos['descripcion'].capitalize(),
-        'fecha': datos['fecha'],
-        'hora': datos.get('hora'),
-        'confirmado': False,
-        'avisado_dia_antes': False,
-    }
-    if db_insert('blasa_eventos', evento):
-        fecha_dt = datetime.strptime(datos['fecha'], '%Y-%m-%d')
-        hora_str = f" a las {datos['hora'][:5]}" if datos.get('hora') else ""
-        return ("Evento guardado:\n" + datos['descripcion'].capitalize() +
-                "\n" + fecha_dt.strftime('%d/%m/%Y') + hora_str +
-                "\n\nTe avisare el dia antes a las 21:00 y el mismo dia cada 2h (entre 8:00 y 22:00).")
-    return "Error guardando el evento."
+if __name__ == '__main__':
+    main()
