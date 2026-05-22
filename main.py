@@ -17,7 +17,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 import gemini
 
 import config, db, router
-from agents import tutoria, ef, recordatorios, racing, gastos, calculin
+from agents import tutoria, ef, recordatorios, racing, gastos, calculin, blasa
 from agents.tutoria import pending_grades
 from agents.gastos import pending_expenses
 
@@ -130,7 +130,7 @@ async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_canales(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Muestra el estado de los canales configurados."""
     channels = db.get_channel_ids()
-    emoji_map = {'ef':'🏃','tutoria':'📋','recordatorios':'⏰','racing':'📸','gastos':'💰','calculin':'🧮','general':'🧠'}
+    emoji_map = {'ef':'🏃','tutoria':'📋','recordatorios':'⏰','racing':'📸','gastos':'💰','calculin':'🧮','blasa':'🔔','general':'🧠'}
     msg = "📡 *Estado de canales*\n\n"
     for domain in config.DOMAINS:
         emoji = emoji_map.get(domain,'💬')
@@ -186,6 +186,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = await gastos.handle(clean_text, chat_id)
     elif domain == 'calculin':
         response = await calculin.handle(clean_text)
+    elif domain == 'blasa':
+        response = await blasa.handle(clean_text, chat_id)
     else:
         response = gemini.ask("Eres el asistente personal de Txako. Responde en español.\n\n" + clean_text)
         domain = 'general'
@@ -234,6 +236,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = await gastos.handle(transcription, chat_id)
     elif domain == 'calculin':
         response = await calculin.handle(transcription)
+    elif domain == 'blasa':
+        response = await blasa.handle(transcription, chat_id)
     else:
         response = gemini.ask("Eres el asistente personal de Txako. Responde en espanol.\n\n" + transcription)
         domain = 'general'
@@ -277,6 +281,14 @@ def main():
         trigger=IntervalTrigger(minutes=1),
         kwargs={'bot': app.bot},
         id='reminders',
+        replace_existing=True
+    )
+    # Scheduler BLASA (cada 5 minutos)
+    scheduler.add_job(
+        blasa.check_y_enviar,
+        trigger=IntervalTrigger(minutes=5),
+        kwargs={'bot': app.bot, 'blasa_chat_id': config.CANALES.get('blasa', 0)},
+        id='blasa_check',
         replace_existing=True
     )
     scheduler.start()
