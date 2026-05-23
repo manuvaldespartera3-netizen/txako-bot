@@ -334,6 +334,66 @@ async def fire_reminders(bot):
 
 # ─── MAIN ─────────────────────────────────────────────────
 
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Procesa foto de ticket y extrae datos del gasto."""
+    if update.effective_chat.id != config.MY_CHAT_ID:
+        return
+    await context.bot.send_chat_action(update.effective_chat.id, 'typing')
+    
+    # Descargar la foto
+    photo = update.message.photo[-1]  # La de mayor resolución
+    file = await context.bot.get_file(photo.file_id)
+    file_bytes = await file.download_as_bytearray()
+    
+    # Mandar a Groq vision para extraer datos del ticket
+    import requests, base64, os, json
+    groq_key = os.environ.get('GROQ_API_KEY', '')
+    img_b64 = base64.b64encode(bytes(file_bytes)).decode()
+    
+    try:
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+            json={
+                "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+                        {"type": "text", "text": """Analiza este ticket de compra y extrae los datos.
+Responde SOLO con JSON sin markdown:
+{"total": numero_decimal, "concepto": "nombre del establecimiento o tipo de compra", "categoria": "supermercado/restaurante/farmacia/gasolina/otros", "quien": null}
+- total: el importe TOTAL del ticket (el número más grande que ponga TOTAL, IMPORTE, etc)
+- concepto: nombre del establecimiento si aparece, si no "Compra"
+- categoria: infiere por el tipo de negocio
+- quien: siempre null (lo preguntaremos)"""}
+                    ]
+                }],
+                "max_tokens": 200
+            },
+            timeout=30
+        )
+        data = response.json()
+        raw = data["choices"][0]["message"]["content"].strip().replace('```json','').replace('```','').strip()
+        parsed = json.loads(raw)
+        
+        # Meter en el flujo normal de gastos
+        from agents.gastos import pending_expenses
+        pending_expenses[update.effective_chat.id] = {
+            'concepto': parsed.get('concepto', 'Compra').capitalize(),
+            'cantidad': parsed.get('total'),
+            'categoria': parsed.get('categoria', '').capitalize(),
+            'quien': None,
+            'notas': None
+        }
+        
+        from agents import gastos
+        response_text = await gastos.ask_missing(update.effective_chat.id)
+        await send_to_channel(context.bot, 'gastos', response_text, update.effective_chat.id)
+        
+    except Exception as e:
+        await update.message.reply_text("No pude leer el ticket. Intentalo con mejor iluminacion o dictalo por voz.")
+
 def main():
     app = Application.builder().token(config.TELEGRAM_TOKEN).build()
 
@@ -346,6 +406,7 @@ def main():
     # Mensajes
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
     # Scheduler recordatorios (cada minuto)
     scheduler = AsyncIOScheduler(timezone=TZ)
@@ -395,4 +456,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-    
+            
