@@ -127,6 +127,12 @@ async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     logger.info(f"Canal configurado: {domain} → {chat_id}")
 
+async def cmd_hoy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Muestra los gastos de hoy."""
+    from agents.gastos import resumen_hoy
+    response = resumen_hoy()
+    await send_to_channel(context.bot, 'gastos', response, update.effective_chat.id)
+
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Limpia todos los estados pendientes."""
     chat_id = update.effective_chat.id
@@ -402,6 +408,7 @@ def main():
     app.add_handler(CommandHandler('setup', cmd_setup))
     app.add_handler(CommandHandler('canales', cmd_canales))
     app.add_handler(CommandHandler('reset', cmd_reset))
+    app.add_handler(CommandHandler('hoy', cmd_hoy))
 
     # Mensajes
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
@@ -456,4 +463,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-            
