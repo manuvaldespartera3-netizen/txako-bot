@@ -179,7 +179,7 @@ async def save_expense(chat_id: int, expense: dict) -> str:
     
     success = save_to_supabase({
         'concepto': cap(expense.get('concepto','')),
-        'cantidad': expense.get('cantidad', 0),
+        'cantidad': abs(float(expense.get('cantidad', 0))),  # siempre positivo
         'quien': expense.get('quien',''),
         'categoria': cap(expense.get('categoria','')),
         'fecha': today,
@@ -191,3 +191,28 @@ async def save_expense(chat_id: int, expense: dict) -> str:
 
 def get_missing_fields(expense: dict) -> list:
     return [f for f in ['cantidad','concepto','categoria','quien'] if not expense.get(f)]
+
+def resumen_hoy() -> str:
+    """Devuelve los gastos del dia de hoy desde Supabase."""
+    from datetime import date
+    import requests, os
+    url = os.environ.get('FAMILIA_SUPABASE_URL', '')
+    key = os.environ.get('FAMILIA_SUPABASE_KEY', '')
+    hoy = date.today().isoformat()
+    try:
+        r = requests.get(
+            f"{url}/rest/v1/gastos?fecha=eq.{hoy}&order=created_at.desc",
+            headers={"apikey": key, "Authorization": f"Bearer {key}"},
+            timeout=10
+        )
+        gastos = r.json() if r.status_code == 200 else []
+        if not gastos:
+            return f"Hoy {date.today().strftime('%d/%m')} no hay gastos registrados."
+        total = sum(float(g.get('cantidad', 0)) for g in gastos)
+        lineas = [f"Gastos de hoy {date.today().strftime('%d/%m')}:\n"]
+        for g in gastos:
+            lineas.append(f"- {g.get('concepto','?')} {g.get('cantidad','?')}€ · {g.get('quien','?')}")
+        lineas.append(f"\nTOTAL: {round(total,2)}€")
+        return "\n".join(lineas)
+    except Exception as e:
+        return f"Error consultando gastos: {e}"
