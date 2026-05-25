@@ -14,12 +14,14 @@ from telegram.ext import (
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
 import gemini
 
 import config, db, router
 from agents import tutoria, ef, recordatorios, racing, gastos, calculin, blasa
 from agents.tutoria import pending_grades
 from agents.gastos import pending_expenses
+from agents.tiempo import obtener_tiempo, formato_mensaje, get_ciudad, set_ciudad
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -35,13 +37,11 @@ async def send_to_channel(bot, domain: str, text: str, fallback_chat_id: int = N
     chat_id = config.CANALES.get(domain, 0)
     
     if not chat_id:
-        # Sin canal configurado → responde donde escribió el usuario
         target = fallback_chat_id or config.MY_CHAT_ID
         logger.info(f"Canal '{domain}' no configurado. Enviando a {target}.")
         await bot.send_message(chat_id=target, text=text)
         return
 
-    # Dividir mensajes largos (límite Telegram 4096 chars)
     chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
     for chunk in chunks:
         try:
@@ -72,11 +72,35 @@ async def transcribe_voice(bot, file_id: str) -> str | None:
         logger.error(f"Error transcribiendo voz: {e}")
         return None
 
+# ─── DETECCIÓN DE PREGUNTA SOBRE EL TIEMPO ────────────────
+
+PALABRAS_TIEMPO = [
+    "tiempo", "llueve", "lluvia", "temperatura", "calor", "frío", "frio",
+    "nublado", "sol", "viento", "clima", "paraguas", "nieva", "nieve",
+    "tormenta", "hace hoy", "weather", "grados"
+]
+
+def detectar_pregunta_tiempo(texto: str):
+    """
+    Devuelve (True, ciudad) si el texto pregunta por el tiempo.
+    ciudad es None si no menciona ciudad concreta.
+    """
+    import re
+    texto_lower = texto.lower()
+    if not any(p in texto_lower for p in PALABRAS_TIEMPO):
+        return False, None
+    match = re.search(
+        r"\ben\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)?)",
+        texto
+    )
+    if match:
+        return True, match.group(1)
+    return True, None
+
 # ─── HANDLERS ─────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != config.MY_CHAT_ID:
-        # Puede ser uno de los chats especializados haciendo /setup
         return
     channels = db.get_channel_ids()
     configured = [d for d in config.DOMAINS if d in channels]
@@ -106,7 +130,6 @@ async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
         return
-    # Buscar dominio en todos los args (por si viene con @bot delante)
     domain = None
     for arg in context.args:
         candidate = arg.lower().strip()
@@ -163,12 +186,59 @@ async def cmd_canales(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f"{emoji} {domain}: ❌ sin configurar\n"
     await update.message.reply_text(msg, parse_mode='Markdown')
 
+# ─── COMANDOS DE TIEMPO ───────────────────────────────────
+
+async def cmd_tiempo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /tiempo          → tiempo ahora en la ciudad activa
+    /tiempo Bilbao   → tiempo en Bilbao sin cambiar ciudad guardada
+    """
+    ciudad = " ".join(context.args).strip() if context.args else get_ciudad()
+    msg = formato_mensaje(ciudad)
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def cmd_ciudad(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /ciudad          → muestra ciudad activa
+    /ciudad Madrid   → cambia ciudad activa a Madrid
+    """
+    if context.args:
+        nueva = " ".join(context.args).strip()
+        datos = obtener_tiempo(nueva)
+        if datos:
+            set_ciudad(datos["ciudad"])
+            await update.message.reply_text(
+                f"✅ Ciudad actualizada a *{datos['ciudad']}*",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ No encontré *{nueva}*. Comprueba el nombre.",
+                parse_mode='Markdown'
+            )
+    else:
+        await update.message.reply_text(
+            f"📍 Ciudad actual: *{get_ciudad()}*\nPara cambiarla: `/ciudad NombreCiudad`",
+            parse_mode='Markdown'
+        )
+
+async def enviar_tiempo_programado(bot, hora_label: str):
+    """Envía el parte del tiempo automáticamente al chat privado."""
+    msg = formato_mensaje(get_ciudad(), hora_label)
+    await bot.send_message(
+        chat_id=config.MY_CHAT_ID,
+        text=msg,
+        parse_mode='Markdown'
+    )
+
+# ─── HANDLERS DE MENSAJES ─────────────────────────────────
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Procesa mensajes de texto del chat maestro."""
     if not update.message or not update.message.text:
         return
     if update.effective_chat.id != config.MY_CHAT_ID:
-        return  # Ignorar mensajes en chats de respuesta
+        return
 
     text = update.message.text
     chat_id = update.effective_chat.id
@@ -190,15 +260,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_to_channel(context.bot, 'gastos', response, update.effective_chat.id)
         return
 
-    # ── Mostrar "escribiendo..." ───────────────────────────
     await context.bot.send_chat_action(chat_id, 'typing')
+
+    # ── Pregunta sobre el tiempo ──────────────────────────
+    es_tiempo, ciudad_mencionada = detectar_pregunta_tiempo(text)
+    if es_tiempo:
+        ciudad = ciudad_mencionada if ciudad_mencionada else get_ciudad()
+        msg = formato_mensaje(ciudad)
+        await update.message.reply_text(msg, parse_mode='Markdown')
+        return
 
     # ── MÁXIMA PRIORIDAD: nombre del canal al inicio ──────
     text_lower_check = text.lower().strip()
     domain = None
     clean_text = text
 
-    # Si empieza por el nombre de un canal → va ahí SIN EXCEPCIONES
     canal_nombres = [
         ('blasa', 'blasa'),
         ('manirrota', 'gastos'),
@@ -216,7 +292,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             clean_text = text[len(nombre):].lstrip(',:').strip()
             break
 
-    # ── Solo si no hay canal explícito, usar palabras clave
     if not domain:
         blasa_triggers = ['recuérdame','recuerda','recuerdame','avísame','avisame',
                           'recordatorio','no me olvide','que no se me olvide',
@@ -233,11 +308,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if any(k in text_lower_check for k in ef_triggers):
             domain = 'ef'
 
-    # ── Router solo como último recurso ───────────────────
     if not domain:
         domain = await router.classify(text)
 
-    # ── Procesar con agente correcto ──────────────────────
     if domain == 'tutoria':
         response = await tutoria.handle(clean_text, chat_id)
     elif domain == 'ef':
@@ -256,7 +329,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = gemini.ask("Eres el asistente personal de Txako. Responde en español.\n\n" + clean_text)
         domain = 'general'
 
-    # ── Enviar al canal correcto ───────────────────────────
     await send_to_channel(context.bot, domain, response, update.effective_chat.id)
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -279,13 +351,19 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = update.effective_chat.id
 
-    # Si hay gasto pendiente, el audio va SIEMPRE al agente de gastos
     if chat_id in pending_expenses:
         response = await gastos.handle(transcription, chat_id)
         await send_to_channel(context.bot, 'gastos', response, chat_id)
         return
 
-    # Sin pendiente — detectar canal por nombre primero
+    # ── Pregunta sobre el tiempo por voz ─────────────────
+    es_tiempo, ciudad_mencionada = detectar_pregunta_tiempo(transcription)
+    if es_tiempo:
+        ciudad = ciudad_mencionada if ciudad_mencionada else get_ciudad()
+        msg = formato_mensaje(ciudad)
+        await update.message.reply_text(msg, parse_mode='Markdown')
+        return
+
     trans_lower = transcription.lower().strip()
     domain = None
     clean_trans = transcription
@@ -337,21 +415,16 @@ async def fire_reminders(bot):
     except Exception as e:
         logger.error(f"Error fire_reminders: {e}")
 
-
-# ─── MAIN ─────────────────────────────────────────────────
-
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Procesa foto de ticket y extrae datos del gasto."""
     if update.effective_chat.id != config.MY_CHAT_ID:
         return
     await context.bot.send_chat_action(update.effective_chat.id, 'typing')
     
-    # Descargar la foto
-    photo = update.message.photo[-1]  # La de mayor resolución
+    photo = update.message.photo[-1]
     file = await context.bot.get_file(photo.file_id)
     file_bytes = await file.download_as_bytearray()
     
-    # Mandar a Groq vision para extraer datos del ticket
     import requests, base64, os, json
     groq_key = os.environ.get('GROQ_API_KEY', '')
     img_b64 = base64.b64encode(bytes(file_bytes)).decode()
@@ -383,7 +456,6 @@ Responde SOLO con JSON sin markdown:
         raw = data["choices"][0]["message"]["content"].strip().replace('```json','').replace('```','').strip()
         parsed = json.loads(raw)
         
-        # Meter en el flujo normal de gastos
         from agents.gastos import pending_expenses
         pending_expenses[update.effective_chat.id] = {
             'concepto': parsed.get('concepto', 'Compra').capitalize(),
@@ -400,6 +472,8 @@ Responde SOLO con JSON sin markdown:
     except Exception as e:
         await update.message.reply_text("No pude leer el ticket. Intentalo con mejor iluminacion o dictalo por voz.")
 
+# ─── MAIN ─────────────────────────────────────────────────
+
 def main():
     app = Application.builder().token(config.TELEGRAM_TOKEN).build()
 
@@ -409,14 +483,18 @@ def main():
     app.add_handler(CommandHandler('canales', cmd_canales))
     app.add_handler(CommandHandler('reset', cmd_reset))
     app.add_handler(CommandHandler('hoy', cmd_hoy))
+    app.add_handler(CommandHandler('tiempo', cmd_tiempo))
+    app.add_handler(CommandHandler('ciudad', cmd_ciudad))
 
     # Mensajes
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
-    # Scheduler recordatorios (cada minuto)
+    # Scheduler
     scheduler = AsyncIOScheduler(timezone=TZ)
+
+    # Recordatorios (cada minuto)
     scheduler.add_job(
         fire_reminders,
         trigger=IntervalTrigger(minutes=1),
@@ -424,42 +502,11 @@ def main():
         id='reminders',
         replace_existing=True
     )
-    # Scheduler BLASA (cada 5 minutos)
+
+    # Blasa (cada 5 minutos)
     async def blasa_check_wrapper():
         await blasa.check_y_enviar(app.bot, config.CANALES.get('blasa', 0))
     scheduler.add_job(
         blasa_check_wrapper,
         trigger=IntervalTrigger(minutes=5),
-        id='blasa_check',
-        replace_existing=True
-    )
-
-    # Plan semanal Racing — cada lunes a las 9:00
-    async def racing_plan_wrapper():
-        import pytz
-        from datetime import datetime
-        now = datetime.now(pytz.timezone('Europe/Madrid'))
-        if now.weekday() == 0 and now.hour == 9 and now.minute < 6:
-            racing_chat = config.CANALES.get('racing', 0)
-            if racing_chat:
-                plan = await racing.plan_semanal()
-                await app.bot.send_message(chat_id=racing_chat, text="PLAN DE LA SEMANA\n\n" + plan)
-    scheduler.add_job(
-        racing_plan_wrapper,
-        trigger=IntervalTrigger(minutes=5),
-        id='racing_plan',
-        replace_existing=True
-    )
-    scheduler.start()
-
-    logger.info("Bot Maestro arrancado.")
-
-    # Arrancar Pitagorin en proceso separado
-    import subprocess, sys
-    subprocess.Popen([sys.executable, "pitagorin_bot.py"])
-    logger.info("Pitagorin arrancado.")
-
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == '__main__':
-    main()
+        id='b
