@@ -17,6 +17,20 @@ SYSTEM = """Eres el asistente de tutoría de Txako, profesor de primaria con 25 
 Ayuda con gestión de alumnos, observaciones e informes para familias.
 Responde en español, de forma directa y práctica."""
 
+def looks_like_batch(text: str) -> bool:
+    """
+    Detecta si el texto contiene múltiples pares nombre+número.
+    Funciona con cualquier formato que genere Whisper.
+    """
+    text_norm = re.sub(r'[.,]\s+', ' ', text)
+    patron = re.compile(
+        r'([A-ZÁÉÍÓÚÑ][a-záéíóúñA-ZÁÉÍÓÚÑ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñA-ZÁÉÍÓÚÑ]+)?)'
+        r'\s+'
+        r'(\d+(?:[.,]\d+)?)'
+    )
+    matches = list(patron.finditer(text_norm))
+    return len(matches) >= 2
+
 def looks_like_grade(text: str) -> bool:
     text_lower = text.lower()
     has_number = bool(re.search(r'\d', text))
@@ -26,29 +40,6 @@ def looks_like_grade(text: str) -> bool:
     has_keyword = any(k in text_lower for k in grade_words)
     has_name = len(text.split()) >= 3
     return (has_number and has_keyword) or (has_number and has_name)
-
-def looks_like_batch(text: str) -> bool:
-    """
-    Detecta batch cuando hay múltiples fragmentos nombre+número.
-    Funciona con puntos (Whisper), punto y coma, o dos puntos.
-    """
-    # Separar por punto, punto y coma, dos puntos
-    fragmentos = [f.strip() for f in re.split(r'[.;:\n]', text) if f.strip()]
-    if len(fragmentos) < 3:
-        return False
-    # Contar fragmentos que terminan en número (son pares nombre+nota)
-    pares = 0
-    for frag in fragmentos:
-        tokens = frag.split()
-        if tokens:
-            ultimo = tokens[-1].replace(',', '.')
-            try:
-                float(ultimo)
-                pares += 1
-            except Exception:
-                pass
-    # Si hay 2 o más pares nombre+nota, es un batch
-    return pares >= 2
 
 async def handle(text: str, chat_id: int, is_voice: bool = False) -> str:
     text_lower = text.lower().strip()
@@ -81,7 +72,7 @@ async def handle(text: str, chat_id: int, is_voice: bool = False) -> str:
         prompt = SYSTEM + f"\n\nGenera un informe de tutoría profesional y cercano para la familia. Máximo 200 palabras.\n\nTxako dice: {text}"
         return gemini_module.ask(prompt)
 
-    # ── Batch: varios alumnos ─────────────────────────────
+    # ── Batch primero (más específico) ────────────────────
     if looks_like_batch(text):
         return await handle_batch(text, chat_id)
 
@@ -133,7 +124,7 @@ async def handle_single_grade(text: str, chat_id: int) -> str:
         else:
             return (
                 f"No encuentro a *{parsed['alumno']}* en la pestaña *{parsed['pestana']}*.\n\n"
-                f"Pestañas disponibles:\n"
+                f"Pestañas:\n"
                 + "\n".join([f"{i+1}. {t}" for i, t in enumerate(tabs)])
                 + f"\n\nSi está en otra pestaña añade el número al inicio:\n"
                 f"*2 {parsed['alumno']}, {parsed['prueba']}, {parsed['nota']}*"
@@ -167,7 +158,7 @@ async def handle_batch(text: str, chat_id: int) -> str:
     if not result:
         return (
             "No he entendido el formato. Habla así:\n"
-            "*Cálculo 26 mayo. Alicia 5,5. Sofía 7. Rodrigo 9*"
+            "*Cálculo 26 mayo. Sofía 7, Rodrigo 9, Noel 8,25*"
         )
 
     prueba, tab, grades = result
@@ -180,7 +171,6 @@ async def handle_batch(text: str, chat_id: int) -> str:
         col_idx, col_found = find_test_col(headers, prueba)
     except Exception:
         col_idx = None
-        col_found = None
 
     resumen = f"📋 *{prueba}* en pestaña *{tab}*\n\n"
     for g in grades:
