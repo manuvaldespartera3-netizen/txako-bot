@@ -151,7 +151,6 @@ def write_grades_batch(tab_name: str, col: int, grades: list[dict]) -> tuple[int
         return 0, len(grades), []
 
 def normalizar_nota(nota_str: str) -> str:
-    """Convierte nota a formato con coma decimal. Ej: 8.25 → 8,25"""
     nota_str = nota_str.strip().replace(',', '.')
     try:
         valor = float(nota_str)
@@ -160,6 +159,13 @@ def normalizar_nota(nota_str: str) -> str:
         return f"{valor:.2f}".rstrip('0').rstrip('.').replace('.', ',')
     except Exception:
         return nota_str
+
+def es_numero(s: str) -> bool:
+    try:
+        float(s.replace(',', '.'))
+        return True
+    except Exception:
+        return False
 
 def parse_grade_command(text: str, available_tabs: list[str]) -> dict | None:
     text = text.strip().rstrip('.')
@@ -192,10 +198,13 @@ def parse_grade_command(text: str, available_tabs: list[str]) -> dict | None:
 
 def parse_batch_grades(text: str, available_tabs: list[str]) -> tuple | None:
     """
-    Formatos aceptados:
+    Acepta estos formatos (todos generados por Whisper al hablar):
+    - 'Cálculo 26 de mayo. Alicia 5,5. Sofía 7. Rodrigo 9.'
     - 'Cálculo 26 mayo: Alicia 5,5; Sofía 7; Rodrigo 9'
-    - 'Cálculo 26 mayo. Alicia 5,5; Sofía 7'
     - '2 Cálculo 26 mayo: Alicia 5,5; Sofía 7' (pestaña 2)
+
+    Lógica: el primer fragmento sin número al final es la prueba.
+    Los siguientes fragmentos con número al final son nombre+nota.
     """
     text = text.strip()
 
@@ -206,38 +215,37 @@ def parse_batch_grades(text: str, available_tabs: list[str]) -> tuple | None:
         tab_idx = int(match.group(1)) - 1
         text = text[match.end():]
 
-    # Separar prueba de alumnos por ':', '.', o salto de línea
-    prueba = None
-    resto = None
-    for sep in [':', '.', '\n']:
-        if sep in text:
-            parts = text.split(sep, 1)
-            prueba = parts[0].strip()
-            resto = parts[1].strip()
-            break
+    # Separar por punto, punto y coma, dos puntos o coma
+    separadores = re.split(r'[.;:\n]', text)
+    fragmentos = [f.strip() for f in separadores if f.strip()]
 
-    if not prueba or not resto:
+    if len(fragmentos) < 2:
         return None
 
-    # Parsear alumnos y notas
-    if ';' in resto:
-        items = [i.strip() for i in resto.split(';')]
-    else:
-        items = [i.strip() for i in resto.split(',')]
-
+    # El primer fragmento que NO termina en número es la prueba
+    # El resto son pares nombre+nota
+    prueba = None
     grades = []
-    for item in items:
-        item = item.strip().rstrip('.')
-        if not item:
+
+    for i, frag in enumerate(fragmentos):
+        tokens = frag.split()
+        if not tokens:
             continue
-        tokens = item.rsplit(' ', 1)
-        if len(tokens) == 2:
-            nombre = tokens[0].strip()
-            nota = normalizar_nota(tokens[1])
+        ultimo = tokens[-1].replace(',', '.')
+        if es_numero(ultimo):
+            # Es un par nombre+nota
+            nombre = ' '.join(tokens[:-1]).strip()
+            nota = normalizar_nota(tokens[-1])
             if nombre and nota:
                 grades.append({'student': nombre, 'grade': nota})
+        else:
+            # Es la prueba (o parte de ella)
+            if prueba is None:
+                prueba = frag
+            else:
+                prueba += ' ' + frag
 
-    if not grades:
+    if not prueba or not grades:
         return None
 
     if available_tabs:
@@ -246,4 +254,5 @@ def parse_batch_grades(text: str, available_tabs: list[str]) -> tuple | None:
     else:
         tab_name = 'DATOS'
 
+    logger.info(f"Batch parseado → prueba:{prueba} tab:{tab_name} alumnos:{len(grades)}")
     return prueba, tab_name, grades
