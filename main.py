@@ -1,7 +1,5 @@
 """
 Bot Maestro — Txako
-Recibe TODOS los mensajes de Txako y los enruta al agente correcto.
-Las respuestas van al chat especializado correspondiente.
 """
 import asyncio, logging
 from datetime import datetime
@@ -92,7 +90,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if configured:
         msg += f"✅ Canales configurados: {', '.join(configured)}\n"
     if missing:
-        msg += f"⚠️ Sin configurar: {', '.join(missing)}\n\nPara configurar: `/setup ef` (o tutoria, recordatorios, racing, general)"
+        msg += f"⚠️ Sin configurar: {', '.join(missing)}\n\nPara configurar: `/setup ef`"
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -175,26 +173,35 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     text = update.message.text
     chat_id = update.effective_chat.id
-    if chat_id in pending_grades:
-        if text.lower().strip() in ['sí', 'si', 'yes', 'ok', '✅', 'confirmar', 'correcto']:
-            response = await tutoria.confirm_grade(chat_id)
-            await send_to_channel(context.bot, 'tutoria', response, update.effective_chat.id)
-            return
-        elif text.lower().strip() in ['no', 'cancelar', 'cancel', '❌']:
-            response = tutoria.cancel_grade(chat_id)
-            await send_to_channel(context.bot, 'tutoria', response, update.effective_chat.id)
-            return
+
+    # ── Cualquier confirmación pendiente de tutoría ───────
+    from agents.tutoria import pending_grades, pending_batch, pending_new_col
+    hay_pendiente_tutoria = (
+        chat_id in pending_grades or
+        chat_id in pending_batch or
+        chat_id in pending_new_col
+    )
+    if hay_pendiente_tutoria:
+        response = await tutoria.handle(text, chat_id)
+        await send_to_channel(context.bot, 'tutoria', response, update.effective_chat.id)
+        return
+
+    # ── Gasto pendiente ───────────────────────────────────
     if chat_id in pending_expenses:
         response = await gastos.handle(text, chat_id)
         await send_to_channel(context.bot, 'gastos', response, update.effective_chat.id)
         return
+
     await context.bot.send_chat_action(chat_id, 'typing')
+
+    # ── Pregunta sobre el tiempo ──────────────────────────
     es_tiempo, ciudad_mencionada = detectar_pregunta_tiempo(text)
     if es_tiempo:
         ciudad = ciudad_mencionada if ciudad_mencionada else get_ciudad()
         msg = formato_mensaje(ciudad)
         await update.message.reply_text(msg, parse_mode='Markdown')
         return
+
     text_lower_check = text.lower().strip()
     domain = None
     clean_text = text
@@ -256,16 +263,31 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(f"Escuche: {transcription}")
     chat_id = update.effective_chat.id
+
+    # ── Confirmación pendiente de tutoría por voz ─────────
+    from agents.tutoria import pending_grades, pending_batch, pending_new_col
+    hay_pendiente_tutoria = (
+        chat_id in pending_grades or
+        chat_id in pending_batch or
+        chat_id in pending_new_col
+    )
+    if hay_pendiente_tutoria:
+        response = await tutoria.handle(transcription, chat_id, is_voice=True)
+        await send_to_channel(context.bot, 'tutoria', response, chat_id)
+        return
+
     if chat_id in pending_expenses:
         response = await gastos.handle(transcription, chat_id)
         await send_to_channel(context.bot, 'gastos', response, chat_id)
         return
+
     es_tiempo, ciudad_mencionada = detectar_pregunta_tiempo(transcription)
     if es_tiempo:
         ciudad = ciudad_mencionada if ciudad_mencionada else get_ciudad()
         msg = formato_mensaje(ciudad)
         await update.message.reply_text(msg, parse_mode='Markdown')
         return
+
     trans_lower = transcription.lower().strip()
     domain = None
     clean_trans = transcription
@@ -333,8 +355,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "model": "meta-llama/llama-4-scout-17b-16e-instruct",
                 "messages": [{"role": "user", "content": [
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
-                    {"type": "text", "text": """Analiza este ticket y extrae datos. Responde SOLO con JSON sin markdown:
-{"total": numero_decimal, "concepto": "nombre establecimiento", "categoria": "supermercado/restaurante/farmacia/gasolina/otros", "quien": null}"""}
+                    {"type": "text", "text": "Analiza este ticket y extrae datos. Responde SOLO con JSON sin markdown: {\"total\": numero_decimal, \"concepto\": \"nombre establecimiento\", \"categoria\": \"supermercado/restaurante/farmacia/gasolina/otros\", \"quien\": null}"}
                 ]}],
                 "max_tokens": 200
             },
