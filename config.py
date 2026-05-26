@@ -11,14 +11,14 @@ GEMINI_API_KEY = os.environ['GEMINI_API_KEY']
 SUPABASE_URL = os.environ['SUPABASE_URL']
 SUPABASE_KEY = os.environ['SUPABASE_KEY']
 
-# ─── GOOGLE SHEETS (opcional, se añade más adelante) ──────
+# ─── GOOGLE SHEETS ────────────────────────────────────────
 GOOGLE_CREDENTIALS = os.environ.get('GOOGLE_CREDENTIALS', '')
-SHEETS_ID          = os.environ.get('SHEETS_ID', '')
+SHEETS_ID          = os.environ.get('GOOGLE_SHEET_ID', '')
 
 # ─── DOMINIOS ─────────────────────────────────────────────
 DOMAINS = ['ef', 'tutoria', 'recordatorios', 'racing', 'gastos', 'calculin', 'blasa', 'general']
 
-# ─── CANALES DE RESPUESTA (variables de entorno) ──────────
+# ─── CANALES DE RESPUESTA ─────────────────────────────────
 import os as _os
 CANALES = {
     'gastos':        int(_os.environ.get('CANAL_GASTOS', 0) or 0),
