@@ -37,35 +37,22 @@ def list_tabs() -> list[str]:
         return []
 
 def find_student_row(all_values: list, name: str) -> tuple:
-    """
-    Busca alumno de forma flexible.
-    Acepta: 'Noel', 'Esteban', 'Noel Esteban', 'Esteban Noel', 'ESTEBAN, NOEL'
-    """
     name_lower = name.lower().replace(',', '').strip()
     name_parts = set(name_lower.split())
-
     for i, row in enumerate(all_values[1:], start=1):
         if not row or not row[0]:
             continue
         cell_lower = row[0].lower().replace(',', '').strip()
         cell_parts = set(cell_lower.split())
-
-        # Coincidencia exacta
         if name_lower == cell_lower:
             return i, row[0]
-
-        # Todos los fragmentos del input están en la celda
         if name_parts and name_parts.issubset(cell_parts):
             return i, row[0]
-
-        # Un solo nombre/apellido coincide con alguna parte
         if len(name_parts) == 1 and name_parts.issubset(cell_parts):
             return i, row[0]
-
     return None, None
 
 def find_test_col(headers: list, test_name: str) -> tuple:
-    """Busca columna de prueba de forma flexible."""
     test_lower = test_name.lower().replace('/', '').replace('-', '').replace(' ', '')
     for i, h in enumerate(headers):
         h_lower = h.lower().replace('/', '').replace('-', '').replace(' ', '')
@@ -97,7 +84,6 @@ def find_cell(tab_name: str, student_name: str, test_name: str) -> dict | None:
         return None
 
 def find_student_in_tab(tab_name: str, student_name: str) -> dict | None:
-    """Busca solo el alumno en una pestaña concreta."""
     try:
         sh = get_spreadsheet()
         ws = sh.worksheet(tab_name)
@@ -113,7 +99,6 @@ def find_student_in_tab(tab_name: str, student_name: str) -> dict | None:
         return None
 
 def find_cell_all_tabs(student_name: str, test_name: str) -> dict | None:
-    """Busca en todas las pestañas."""
     tabs = list_tabs()
     for tab in tabs:
         result = find_cell(tab, student_name, test_name)
@@ -122,12 +107,10 @@ def find_cell_all_tabs(student_name: str, test_name: str) -> dict | None:
     return None
 
 def create_test_column(tab_name: str, test_name: str) -> int | None:
-    """Crea columna en la siguiente libre. Devuelve col (1-based)."""
     try:
         sh = get_spreadsheet()
         ws = sh.worksheet(tab_name)
         headers = ws.row_values(1)
-        # Siguiente columna libre después de la última con contenido
         col_idx = len([h for h in headers if h.strip()]) + 1
         ws.update_cell(1, col_idx, test_name)
         logger.info(f"Columna creada: '{test_name}' en col {col_idx} de {tab_name}")
@@ -147,11 +130,6 @@ def write_grade(tab_name: str, row: int, col: int, grade: str) -> bool:
         return False
 
 def write_grades_batch(tab_name: str, col: int, grades: list[dict]) -> tuple[int, int, list]:
-    """
-    Escribe múltiples notas en una columna concreta.
-    grades = [{'student': str, 'grade': str}, ...]
-    Devuelve (ok, fallos, lista_no_encontrados)
-    """
     try:
         sh = get_spreadsheet()
         ws = sh.worksheet(tab_name)
@@ -167,18 +145,23 @@ def write_grades_batch(tab_name: str, col: int, grades: list[dict]) -> tuple[int
             else:
                 fallos += 1
                 no_encontrados.append(g['student'])
-                logger.warning(f"No encontrado: {g['student']}")
         return ok, fallos, no_encontrados
     except Exception as e:
         logger.error(f"Error en batch: {e}")
         return 0, len(grades), []
 
+def normalizar_nota(nota_str: str) -> str:
+    """Convierte nota a formato con coma decimal. Ej: 8.25 → 8,25"""
+    nota_str = nota_str.strip().replace(',', '.')
+    try:
+        valor = float(nota_str)
+        if valor == int(valor):
+            return str(int(valor))
+        return f"{valor:.2f}".rstrip('0').rstrip('.').replace('.', ',')
+    except Exception:
+        return nota_str
+
 def parse_grade_command(text: str, available_tabs: list[str]) -> dict | None:
-    """
-    Parser individual. Formato: [num_pestaña] Nombre, prueba, nota
-    Ejemplo: 'Esteban Noel, cálculo 26 mayo, 8.25'
-    Ejemplo: '2 Esteban Noel, cálculo 26 mayo, 8.25' → pestaña 2
-    """
     text = text.strip().rstrip('.')
 
     # Detectar número de pestaña al inicio
@@ -196,34 +179,26 @@ def parse_grade_command(text: str, available_tabs: list[str]) -> dict | None:
 
     alumno = partes[0]
     prueba = partes[1]
-    nota = partes[2]
+    nota_raw = partes[2]
 
-    nota_clean = re.sub(r'[^\d.,]', '', nota).replace(',', '.')
-    if not nota_clean:
-        nota_clean = nota.strip()
+    nota = normalizar_nota(nota_raw)
 
-    # Pestaña por defecto: la primera (DATOS), salvo que se indique número
     if available_tabs:
         tab_idx = max(0, min(tab_idx, len(available_tabs) - 1))
         pestana = available_tabs[tab_idx]
     else:
         pestana = 'DATOS'
 
-    logger.info(f"Parseado → alumno:{alumno} prueba:{prueba} nota:{nota_clean} pestaña:{pestana}")
+    logger.info(f"Parseado → alumno:{alumno} prueba:{prueba} nota:{nota} pestaña:{pestana}")
     return {
         'alumno': alumno,
         'prueba': prueba,
-        'nota': nota_clean,
+        'nota': nota,
         'pestana': pestana,
         'valido': True
     }
 
 def parse_batch_grades(text: str, available_tabs: list[str]) -> tuple | None:
-    """
-    Parsea formato batch:
-    '[num_pestaña] Prueba fecha. Nombre nota; Nombre nota; ...'
-    Devuelve (prueba, tab_name, col_existente_o_None, grades) o None
-    """
     text = text.strip()
 
     # Detectar número de pestaña al inicio
@@ -233,7 +208,7 @@ def parse_batch_grades(text: str, available_tabs: list[str]) -> tuple | None:
         tab_idx = int(match.group(1)) - 1
         text = text[match.end():]
 
-    # Separar prueba del resto (por punto o salto de línea)
+    # Separar prueba del resto
     if '.' in text:
         parts = text.split('.', 1)
         prueba = parts[0].strip()
@@ -259,13 +234,13 @@ def parse_batch_grades(text: str, available_tabs: list[str]) -> tuple | None:
         item = item.strip().rstrip('.')
         if not item:
             continue
+        # Último token es la nota
         tokens = item.rsplit(' ', 1)
         if len(tokens) == 2:
             nombre = tokens[0].strip()
-            nota = tokens[1].strip().replace(',', '.')
-            nota_clean = re.sub(r'[^\d.]', '', nota)
-            if nombre and nota_clean:
-                grades.append({'student': nombre, 'grade': nota_clean})
+            nota = normalizar_nota(tokens[1])
+            if nombre and nota:
+                grades.append({'student': nombre, 'grade': nota})
 
     if not grades:
         return None
