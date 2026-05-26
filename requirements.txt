@@ -1,7 +1,6 @@
-python-telegram-bot==20.7
-requests==2.31.0
-supabase==2.5.0
-APScheduler==3.10.4
-pytz==2024.1
+python-telegram-bot==21.5
+google-generativeai==0.8.3
 gspread==6.1.2
-google-auth==2.29.0
+google-auth==2.34.0
+requests==2.32.3
+APScheduler==3.10.4
