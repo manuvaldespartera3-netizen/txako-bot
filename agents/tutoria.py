@@ -28,10 +28,27 @@ def looks_like_grade(text: str) -> bool:
     return (has_number and has_keyword) or (has_number and has_name)
 
 def looks_like_batch(text: str) -> bool:
-    has_separator = ';' in text or (text.count(',') >= 3)
-    has_number = bool(re.search(r'\d', text))
-    has_dot = '.' in text
-    return has_separator and has_number and has_dot
+    """
+    Detecta batch cuando hay múltiples fragmentos nombre+número.
+    Funciona con puntos (Whisper), punto y coma, o dos puntos.
+    """
+    # Separar por punto, punto y coma, dos puntos
+    fragmentos = [f.strip() for f in re.split(r'[.;:\n]', text) if f.strip()]
+    if len(fragmentos) < 3:
+        return False
+    # Contar fragmentos que terminan en número (son pares nombre+nota)
+    pares = 0
+    for frag in fragmentos:
+        tokens = frag.split()
+        if tokens:
+            ultimo = tokens[-1].replace(',', '.')
+            try:
+                float(ultimo)
+                pares += 1
+            except Exception:
+                pass
+    # Si hay 2 o más pares nombre+nota, es un batch
+    return pares >= 2
 
 async def handle(text: str, chat_id: int, is_voice: bool = False) -> str:
     text_lower = text.lower().strip()
@@ -91,15 +108,11 @@ async def handle_single_grade(text: str, chat_id: int) -> str:
             + "\n".join([f"{i+1}. {t}" for i, t in enumerate(tabs)])
         )
 
-    # Buscar en la pestaña indicada
     cell = find_cell(parsed['pestana'], parsed['alumno'], parsed['prueba'])
 
     if not cell:
-        # Buscar si el alumno existe en esa pestaña aunque no la columna
         alumno_info = find_student_in_tab(parsed['pestana'], parsed['alumno'])
-
         if alumno_info:
-            # Alumno existe, columna no → ofrecer crearla
             pending_new_col[chat_id] = {
                 'alumno': parsed['alumno'],
                 'prueba': parsed['prueba'],
@@ -122,7 +135,7 @@ async def handle_single_grade(text: str, chat_id: int) -> str:
                 f"No encuentro a *{parsed['alumno']}* en la pestaña *{parsed['pestana']}*.\n\n"
                 f"Pestañas disponibles:\n"
                 + "\n".join([f"{i+1}. {t}" for i, t in enumerate(tabs)])
-                + f"\n\nSi está en otra pestaña, añade el número al inicio:\n"
+                + f"\n\nSi está en otra pestaña añade el número al inicio:\n"
                 f"*2 {parsed['alumno']}, {parsed['prueba']}, {parsed['nota']}*"
             )
 
@@ -153,15 +166,12 @@ async def handle_batch(text: str, chat_id: int) -> str:
     result = parse_batch_grades(text, tabs)
     if not result:
         return (
-            "No he entendido el formato. Dime así:\n"
-            "*Cálculo 26 mayo. Alicia 5,5; Sofía 7; Rodrigo 9*\n\n"
-            "O para otra pestaña añade el número al inicio:\n"
-            "*2 Lectura 26 mayo. Alicia 8; Sofía 9*"
+            "No he entendido el formato. Habla así:\n"
+            "*Cálculo 26 mayo. Alicia 5,5. Sofía 7. Rodrigo 9*"
         )
 
     prueba, tab, grades = result
 
-    # Comprobar si la columna existe
     from integrations.sheets import get_spreadsheet, find_test_col
     try:
         sh = get_spreadsheet()
@@ -177,7 +187,7 @@ async def handle_batch(text: str, chat_id: int) -> str:
         resumen += f"• {g['student']}: *{g['grade']}*\n"
 
     if col_idx is None:
-        resumen += f"\n⚠️ La columna *{prueba}* no existe. Se creará automáticamente."
+        resumen += f"\n⚠️ La columna *{prueba}* no existe. Se creará."
 
     resumen += f"\n\n¿Lo guardo? *sí* o *no*\n"
     resumen += "_(Pestañas: " + ", ".join([f"{i+1}={t}" for i, t in enumerate(tabs)]) + ")_"
@@ -212,14 +222,13 @@ async def confirm_batch(chat_id: int) -> str:
     grades = pending['grades']
     col_idx = pending.get('col_idx')
 
-    # Crear columna si no existe
     if col_idx is None:
         col_idx = create_test_column(tab, prueba)
         if not col_idx:
             del pending_batch[chat_id]
             return "❌ Error creando la columna."
     else:
-        col_idx = col_idx + 1  # convertir a 1-based
+        col_idx = col_idx + 1
 
     ok, fallos, no_encontrados = write_grades_batch(tab, col_idx, grades)
     del pending_batch[chat_id]
@@ -234,13 +243,10 @@ async def create_col_and_continue(chat_id: int) -> str:
     pending = pending_new_col.get(chat_id)
     if not pending:
         return "No hay nada pendiente."
-
     col = create_test_column(pending['tab'], pending['prueba'])
     del pending_new_col[chat_id]
-
     if not col:
         return "❌ Error creando la columna."
-
     success = write_grade(pending['tab'], pending['row'], col, pending['nota'])
     if success:
         return (
