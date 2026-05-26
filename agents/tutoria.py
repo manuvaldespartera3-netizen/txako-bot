@@ -1,5 +1,5 @@
 """Agente Tutoría."""
-import json, logging, re
+import logging, re
 import gemini as gemini_module
 from integrations.sheets import (
     list_tabs, parse_grade_command, find_cell, write_grade
@@ -22,32 +22,28 @@ def looks_like_grade(text: str) -> bool:
                    'calculo', 'examen', 'prueba', 'test', 'lectura', 'dictado',
                    'matematicas', 'matemáticas', 'lengua', 'trimestre']
     has_keyword = any(k in text_lower for k in grade_words)
-    # Si tiene número Y alguna palabra clave, o si tiene número y parece un nombre
     has_name = len(text.split()) >= 3
     return (has_number and has_keyword) or (has_number and has_name)
 
 async def handle(text: str, chat_id: int, is_voice: bool = False) -> str:
     text_lower = text.lower().strip()
 
-    # Confirmación pendiente
     if text_lower in ['si', 'sí', 'yes', 'confirmar', 'ok', 'correcto', 'vale']:
         return await confirm_grade(chat_id)
 
     if text_lower in ['no', 'cancelar', 'cancel']:
         return cancel_grade(chat_id)
 
-    # Informe para familia
     if 'informe' in text_lower or 'familia' in text_lower:
         prompt = SYSTEM + f"\n\nGenera un informe de tutoría profesional y cercano para la familia. Máximo 200 palabras.\n\nTxako dice: {text}"
         return gemini_module.ask(prompt)
 
-    # Detección de nota
     if looks_like_grade(text):
         tabs = list_tabs()
         if not tabs:
             return "❌ No puedo conectar con Google Sheets ahora mismo."
 
-        parsed = await parse_grade_command(text, tabs)
+        parsed = parse_grade_command(text, tabs)
 
         if not parsed:
             return (
@@ -65,7 +61,7 @@ async def handle(text: str, chat_id: int, is_voice: bool = False) -> str:
                 f"📝 Prueba: *{parsed['prueba']}*\n"
                 f"🗂 Pestaña buscada: *{parsed['pestana']}*\n\n"
                 f"Pero no encuentro ese alumno o prueba en la hoja. "
-                f"¿Está bien escrito el nombre y la columna existe?"
+                f"¿Está bien escrito el nombre y existe esa columna?"
             )
 
         pending_grades[chat_id] = {
@@ -86,7 +82,6 @@ async def handle(text: str, chat_id: int, is_voice: bool = False) -> str:
             f"¿Lo guardo? Responde *sí* o *no*"
         )
 
-    # Consulta general de tutoría
     prompt = SYSTEM + f"\n\nConsulta: {text}"
     return gemini_module.ask(prompt)
 
