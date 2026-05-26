@@ -1,9 +1,7 @@
 """
 Integración Google Sheets.
-Permite leer y escribir notas en la hoja de calificaciones de Txako.
-Flujo: voz → texto → parsear alumno/prueba/nota → confirmar → escribir
 """
-import json, logging, re
+import json, logging, os
 import gspread
 from google.oauth2.service_account import Credentials
 import google.generativeai as genai
@@ -17,7 +15,13 @@ SCOPES = [
 ]
 
 def get_sheet_client() -> gspread.Client:
-    creds_dict = json.loads(config.GOOGLE_CREDENTIALS)
+    raw = config.GOOGLE_CREDENTIALS
+    # Limpiar si viene con comillas externas o escapes dobles
+    raw = raw.strip()
+    if raw.startswith('"') and raw.endswith('"'):
+        raw = raw[1:-1]
+    raw = raw.replace('\\"', '"').replace('\\\\n', '\\n')
+    creds_dict = json.loads(raw)
     creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     return gspread.authorize(creds)
 
@@ -26,7 +30,6 @@ def get_spreadsheet():
     return gc.open_by_key(config.SHEETS_ID)
 
 def list_tabs() -> list[str]:
-    """Devuelve los nombres de todas las pestañas."""
     try:
         sh = get_spreadsheet()
         return [ws.title for ws in sh.worksheets()]
@@ -35,22 +38,13 @@ def list_tabs() -> list[str]:
         return []
 
 def find_cell(tab_name: str, student_name: str, test_name: str) -> dict | None:
-    """
-    Busca la celda donde va la nota.
-    Devuelve {'row': int, 'col': int, 'student_found': str, 'test_found': str}
-    o None si no encuentra.
-    """
     try:
         sh = get_spreadsheet()
         ws = sh.worksheet(tab_name)
         all_values = ws.get_all_values()
-
         if not all_values:
             return None
-
-        headers = all_values[0]  # Primera fila: nombres de pruebas
-
-        # Buscar columna de la prueba (búsqueda flexible)
+        headers = all_values[0]
         test_col = None
         test_found = None
         test_lower = test_name.lower().replace('/', '').replace('-', '').replace(' ', '')
@@ -60,8 +54,6 @@ def find_cell(tab_name: str, student_name: str, test_name: str) -> dict | None:
                 test_col = i
                 test_found = h
                 break
-
-        # Buscar fila del alumno (búsqueda flexible, primera columna)
         student_row = None
         student_found = None
         student_lower = student_name.lower()
@@ -70,12 +62,10 @@ def find_cell(tab_name: str, student_name: str, test_name: str) -> dict | None:
                 student_row = i
                 student_found = row[0]
                 break
-
         if test_col is None or student_row is None:
             return None
-
         return {
-            'row': student_row + 1,  # gspread usa 1-based index
+            'row': student_row + 1,
             'col': test_col + 1,
             'student_found': student_found,
             'test_found': test_found,
@@ -86,7 +76,6 @@ def find_cell(tab_name: str, student_name: str, test_name: str) -> dict | None:
         return None
 
 def write_grade(tab_name: str, row: int, col: int, grade: str) -> bool:
-    """Escribe la nota en la celda indicada."""
     try:
         sh = get_spreadsheet()
         ws = sh.worksheet(tab_name)
@@ -97,15 +86,10 @@ def write_grade(tab_name: str, row: int, col: int, grade: str) -> bool:
         return False
 
 def add_test_column(tab_name: str, test_name: str) -> int | None:
-    """
-    Busca la primera columna vacía en la fila de cabecera y le pone el nombre de la prueba.
-    Devuelve el índice de columna (1-based) o None si falla.
-    """
     try:
         sh = get_spreadsheet()
         ws = sh.worksheet(tab_name)
         headers = ws.row_values(1)
-        # Primera columna vacía después de la última con contenido
         col_idx = len(headers) + 1
         for i, h in enumerate(headers):
             if not h.strip():
@@ -117,13 +101,7 @@ def add_test_column(tab_name: str, test_name: str) -> int | None:
         logger.error(f"Error añadiendo columna: {e}")
         return None
 
-# ─── PARSER CON IA ────────────────────────────────────────
-
 async def parse_grade_command(text: str, available_tabs: list[str]) -> dict | None:
-    """
-    Usa Gemini para extraer alumno, prueba y nota de texto libre o voz transcrita.
-    Devuelve {alumno, prueba, nota, pestaña_probable} o None.
-    """
     model = genai.GenerativeModel('gemini-2.0-flash-exp')
     prompt = f"""Extrae la información de calificación del siguiente texto.
 Pestañas disponibles en la hoja: {', '.join(available_tabs)}
@@ -140,7 +118,6 @@ Responde SOLO con JSON sin markdown:
 }}
 
 Si no hay suficiente información, responde: {{"valido": false}}
-La nota puede ser: 7, 6.5, "suspenso", "NP" (no presentado), etc.
 """
     try:
         response = model.generate_content(prompt)
