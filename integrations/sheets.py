@@ -1,10 +1,9 @@
 """
 Integración Google Sheets.
 """
-import json, logging
+import json, logging, re
 import gspread
 from google.oauth2.service_account import Credentials
-import google.generativeai as genai
 import config
 
 logger = logging.getLogger(__name__)
@@ -17,10 +16,8 @@ SCOPES = [
 def get_sheet_client() -> gspread.Client:
     raw = config.GOOGLE_CREDENTIALS
     raw = raw.strip()
-    # Quitar comillas externas si las hay
     if raw.startswith('"') and raw.endswith('"'):
         raw = raw[1:-1]
-    # Reparar escapes dobles
     raw = raw.replace('\\"', '"').replace('\\\\n', '\\n')
     logger.info(f"CREDENTIALS inicio: {repr(raw[:30])}")
     creds_dict = json.loads(raw)
@@ -77,6 +74,15 @@ def find_cell(tab_name: str, student_name: str, test_name: str) -> dict | None:
         logger.error(f"Error buscando celda: {e}")
         return None
 
+def find_cell_all_tabs(student_name: str, test_name: str) -> dict | None:
+    """Busca en todas las pestañas hasta encontrar alumno y prueba."""
+    tabs = list_tabs()
+    for tab in tabs:
+        result = find_cell(tab, student_name, test_name)
+        if result:
+            return result
+    return None
+
 def write_grade(tab_name: str, row: int, col: int, grade: str) -> bool:
     try:
         sh = get_spreadsheet()
@@ -87,46 +93,48 @@ def write_grade(tab_name: str, row: int, col: int, grade: str) -> bool:
         logger.error(f"Error escribiendo nota: {e}")
         return False
 
-def add_test_column(tab_name: str, test_name: str) -> int | None:
-    try:
-        sh = get_spreadsheet()
-        ws = sh.worksheet(tab_name)
-        headers = ws.row_values(1)
-        col_idx = len(headers) + 1
-        for i, h in enumerate(headers):
-            if not h.strip():
-                col_idx = i + 1
-                break
-        ws.update_cell(1, col_idx, test_name)
-        return col_idx
-    except Exception as e:
-        logger.error(f"Error añadiendo columna: {e}")
+def parse_grade_command(text: str, available_tabs: list[str]) -> dict | None:
+    """
+    Parser simple sin IA. Formato esperado:
+    "Nombre Apellido, prueba fecha, nota"
+    o cualquier combinación con coma separando nombre, prueba y nota.
+    """
+    text = text.strip().rstrip('.')
+
+    # Separar por comas
+    partes = [p.strip() for p in text.split(',')]
+
+    if len(partes) < 3:
+        # Intentar separar por punto
+        partes = [p.strip() for p in text.split('.')]
+
+    if len(partes) < 3:
+        logger.error(f"No se pudo parsear (menos de 3 partes): {text}")
         return None
 
-async def parse_grade_command(text: str, available_tabs: list[str]) -> dict | None:
-    model = genai.GenerativeModel('gemini-2.0-flash-exp')
-    prompt = f"""Extrae la información de calificación del siguiente texto.
-Pestañas disponibles en la hoja: {', '.join(available_tabs)}
+    alumno = partes[0]
+    prueba = partes[1]
+    nota = partes[2]
 
-Texto: "{text}"
+    # Limpiar nota: quedarse solo con números, coma o punto
+    nota_clean = re.sub(r'[^\d.,]', '', nota).replace(',', '.')
+    if not nota_clean:
+        nota_clean = nota.strip()
 
-Responde SOLO con JSON sin markdown:
-{{
-  "alumno": "nombre completo del alumno",
-  "prueba": "nombre de la prueba tal como aparece o debería aparecer en la hoja",
-  "nota": "la nota como número o texto exacto",
-  "pestana": "nombre de la pestaña más probable de las disponibles",
-  "valido": true
-}}
+    # Detectar pestaña más probable
+    pestana = available_tabs[0] if available_tabs else 'DATOS'
+    prueba_lower = prueba.lower()
+    for tab in available_tabs:
+        if tab.lower() in prueba_lower or prueba_lower in tab.lower():
+            pestana = tab
+            break
 
-Si no hay suficiente información, responde: {{"valido": false}}
-La nota puede ser: 7, 6.5, "suspenso", "NP", etc.
-"""
-    try:
-        response = model.generate_content(prompt)
-        raw = response.text.strip().replace('```json','').replace('```','').strip()
-        data = json.loads(raw)
-        return data if data.get('valido') else None
-    except Exception as e:
-        logger.error(f"Error parseando nota: {e}")
-        return None
+    logger.info(f"Parseado → alumno:{alumno} prueba:{prueba} nota:{nota_clean} pestaña:{pestana}")
+
+    return {
+        'alumno': alumno,
+        'prueba': prueba,
+        'nota': nota_clean,
+        'pestana': pestana,
+        'valido': True
+    }
