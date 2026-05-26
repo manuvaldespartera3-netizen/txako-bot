@@ -198,13 +198,9 @@ def parse_grade_command(text: str, available_tabs: list[str]) -> dict | None:
 
 def parse_batch_grades(text: str, available_tabs: list[str]) -> tuple | None:
     """
-    Acepta estos formatos (todos generados por Whisper al hablar):
-    - 'Cálculo 26 de mayo. Alicia 5,5. Sofía 7. Rodrigo 9.'
-    - 'Cálculo 26 mayo: Alicia 5,5; Sofía 7; Rodrigo 9'
-    - '2 Cálculo 26 mayo: Alicia 5,5; Sofía 7' (pestaña 2)
-
-    Lógica: el primer fragmento sin número al final es la prueba.
-    Los siguientes fragmentos con número al final son nombre+nota.
+    Parsea texto continuo sin separadores claros.
+    Formato Whisper: 'cálculo 26 de mayo Sofía 7 Rodrigo 9 Noel 8,25 África 5,25'
+    También acepta puntos, punto y coma, dos puntos como separadores.
     """
     text = text.strip()
 
@@ -215,37 +211,47 @@ def parse_batch_grades(text: str, available_tabs: list[str]) -> tuple | None:
         tab_idx = int(match.group(1)) - 1
         text = text[match.end():]
 
-    # Separar por punto, punto y coma, dos puntos o coma
-    separadores = re.split(r'[.;:\n]', text)
-    fragmentos = [f.strip() for f in separadores if f.strip()]
+    # Tokenizar por espacios
+    tokens = text.replace(';', ' ').replace(':', ' ').split()
+    tokens = [t.strip('.,') for t in tokens if t.strip('.,')]
 
-    if len(fragmentos) < 2:
+    # Encontrar primer token numérico — todo antes es la prueba
+    prueba_tokens = []
+    resto_tokens = []
+    encontrado_numero = False
+    for i, t in enumerate(tokens):
+        if not encontrado_numero and es_numero(t):
+            # El token anterior a este número es el último del nombre del primer alumno
+            # Los tokens hasta i-1 inclusive son prueba + primer nombre
+            # Retroceder: el último token antes del número es parte del primer nombre
+            encontrado_numero = True
+            # prueba = todo hasta i-2, primer_nombre = tokens[i-1]
+            resto_tokens = tokens[i-1:]  # desde el primer nombre
+            prueba_tokens = tokens[:i-1]
+            break
+        if not encontrado_numero:
+            prueba_tokens.append(t)
+
+    if not encontrado_numero or not prueba_tokens:
         return None
 
-    # El primer fragmento que NO termina en número es la prueba
-    # El resto son pares nombre+nota
-    prueba = None
+    prueba = ' '.join(prueba_tokens)
+
+    # Ahora parsear resto_tokens: nombre nota nombre nota...
+    # Los números son notas, las palabras entre números son nombres
     grades = []
-
-    for i, frag in enumerate(fragmentos):
-        tokens = frag.split()
-        if not tokens:
-            continue
-        ultimo = tokens[-1].replace(',', '.')
-        if es_numero(ultimo):
-            # Es un par nombre+nota
-            nombre = ' '.join(tokens[:-1]).strip()
-            nota = normalizar_nota(tokens[-1])
-            if nombre and nota:
+    nombre_actual = []
+    for t in resto_tokens:
+        if es_numero(t):
+            if nombre_actual:
+                nombre = ' '.join(nombre_actual)
+                nota = normalizar_nota(t)
                 grades.append({'student': nombre, 'grade': nota})
+                nombre_actual = []
         else:
-            # Es la prueba (o parte de ella)
-            if prueba is None:
-                prueba = frag
-            else:
-                prueba += ' ' + frag
+            nombre_actual.append(t)
 
-    if not prueba or not grades:
+    if not grades:
         return None
 
     if available_tabs:
@@ -254,5 +260,5 @@ def parse_batch_grades(text: str, available_tabs: list[str]) -> tuple | None:
     else:
         tab_name = 'DATOS'
 
-    logger.info(f"Batch parseado → prueba:{prueba} tab:{tab_name} alumnos:{len(grades)}")
+    logger.info(f"Batch → prueba:{prueba} tab:{tab_name} alumnos:{[g['student'] for g in grades]}")
     return prueba, tab_name, grades
