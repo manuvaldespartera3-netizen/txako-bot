@@ -1,7 +1,7 @@
 """
 Integración Google Sheets.
 """
-import json, logging, os
+import json, logging
 import gspread
 from google.oauth2.service_account import Credentials
 import google.generativeai as genai
@@ -16,11 +16,13 @@ SCOPES = [
 
 def get_sheet_client() -> gspread.Client:
     raw = config.GOOGLE_CREDENTIALS
-    # Limpiar si viene con comillas externas o escapes dobles
     raw = raw.strip()
+    # Quitar comillas externas si las hay
     if raw.startswith('"') and raw.endswith('"'):
         raw = raw[1:-1]
+    # Reparar escapes dobles
     raw = raw.replace('\\"', '"').replace('\\\\n', '\\n')
+    logger.info(f"CREDENTIALS inicio: {repr(raw[:30])}")
     creds_dict = json.loads(raw)
     creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     return gspread.authorize(creds)
@@ -118,6 +120,7 @@ Responde SOLO con JSON sin markdown:
 }}
 
 Si no hay suficiente información, responde: {{"valido": false}}
+La nota puede ser: 7, 6.5, "suspenso", "NP", etc.
 """
     try:
         response = model.generate_content(prompt)
