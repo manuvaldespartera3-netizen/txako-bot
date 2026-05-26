@@ -3,7 +3,7 @@ import logging, re
 import gemini as gemini_module
 from integrations.sheets import (
     list_tabs, parse_grade_command, parse_batch_grades,
-    find_cell, find_cell_all_tabs, write_grade, write_grades_batch,
+    find_cell, find_student_in_tab, write_grade, write_grades_batch,
     create_test_column
 )
 
@@ -28,22 +28,22 @@ def looks_like_grade(text: str) -> bool:
     return (has_number and has_keyword) or (has_number and has_name)
 
 def looks_like_batch(text: str) -> bool:
-    """Detecta formato batch: prueba + varios alumnos con notas."""
     has_separator = ';' in text or (text.count(',') >= 3)
     has_number = bool(re.search(r'\d', text))
-    return has_separator and has_number
+    has_dot = '.' in text
+    return has_separator and has_number and has_dot
 
 async def handle(text: str, chat_id: int, is_voice: bool = False) -> str:
     text_lower = text.lower().strip()
 
-    # ── Respuesta a confirmación de nota individual ────────
+    # ── Confirmación nota individual ──────────────────────
     if chat_id in pending_grades:
         if text_lower in ['si', 'sí', 'yes', 'confirmar', 'ok', 'correcto', 'vale']:
             return await confirm_grade(chat_id)
         elif text_lower in ['no', 'cancelar', 'cancel']:
             return cancel_grade(chat_id)
 
-    # ── Respuesta a confirmación de batch ─────────────────
+    # ── Confirmación batch ────────────────────────────────
     if chat_id in pending_batch:
         if text_lower in ['si', 'sí', 'yes', 'confirmar', 'ok', 'correcto', 'vale']:
             return await confirm_batch(chat_id)
@@ -51,20 +51,20 @@ async def handle(text: str, chat_id: int, is_voice: bool = False) -> str:
             del pending_batch[chat_id]
             return "❌ Cancelado."
 
-    # ── Respuesta a crear columna nueva ───────────────────
+    # ── Confirmación crear columna nueva ──────────────────
     if chat_id in pending_new_col:
         if text_lower in ['si', 'sí', 'yes', 'ok', 'vale', 'crear', 'crea']:
             return await create_col_and_continue(chat_id)
         elif text_lower in ['no', 'cancelar', 'cancel']:
             del pending_new_col[chat_id]
-            return "❌ Cancelado. No se ha creado ninguna columna."
+            return "❌ Cancelado."
 
-    # ── Informe para familia ───────────────────────────────
+    # ── Informe para familia ──────────────────────────────
     if 'informe' in text_lower or 'familia' in text_lower:
         prompt = SYSTEM + f"\n\nGenera un informe de tutoría profesional y cercano para la familia. Máximo 200 palabras.\n\nTxako dice: {text}"
         return gemini_module.ask(prompt)
 
-    # ── Batch: varios alumnos a la vez ────────────────────
+    # ── Batch: varios alumnos ─────────────────────────────
     if looks_like_batch(text):
         return await handle_batch(text, chat_id)
 
@@ -87,38 +87,43 @@ async def handle_single_grade(text: str, chat_id: int) -> str:
         return (
             f"No he entendido bien la nota. Dime por ejemplo:\n"
             f"*Lucía Martínez, cálculo 22 mayo, 7*\n\n"
-            f"Las pestañas disponibles son: {', '.join(tabs)}"
+            f"Pestañas disponibles:\n"
+            + "\n".join([f"{i+1}. {t}" for i, t in enumerate(tabs)])
         )
 
-    # Buscar en todas las pestañas
-    cell = find_cell_all_tabs(parsed['alumno'], parsed['prueba'])
+    # Buscar en la pestaña indicada
+    cell = find_cell(parsed['pestana'], parsed['alumno'], parsed['prueba'])
 
     if not cell:
-        # Buscar solo el alumno para ver si existe
-        cell_alumno = find_cell_all_tabs(parsed['alumno'], tabs[0] if tabs else 'DATOS')
-        alumno_existe = cell_alumno is not None
+        # Buscar si el alumno existe en esa pestaña aunque no la columna
+        alumno_info = find_student_in_tab(parsed['pestana'], parsed['alumno'])
 
-        if alumno_existe:
-            # El alumno existe pero la columna no — ofrecer crearla
+        if alumno_info:
+            # Alumno existe, columna no → ofrecer crearla
             pending_new_col[chat_id] = {
                 'alumno': parsed['alumno'],
                 'prueba': parsed['prueba'],
                 'nota': parsed['nota'],
-                'tab': cell_alumno['tab'] if cell_alumno else tabs[0]
+                'tab': parsed['pestana'],
+                'row': alumno_info['row'],
+                'student_found': alumno_info['student_found']
             }
             return (
-                f"👤 Alumno encontrado en *{cell_alumno['tab'] if cell_alumno else tabs[0]}*\n"
-                f"📝 Pero la columna *{parsed['prueba']}* no existe.\n\n"
-                f"¿Quieres que la cree? Responde *sí* o *no*"
+                f"👤 Alumno: *{alumno_info['student_found']}*\n"
+                f"🗂 Pestaña: *{parsed['pestana']}*\n"
+                f"📝 La columna *{parsed['prueba']}* no existe todavía.\n\n"
+                f"¿La creo? *sí* o *no*\n\n"
+                f"_(Pestañas: "
+                + ", ".join([f"{i+1}={t}" for i, t in enumerate(tabs)])
+                + ")_"
             )
         else:
             return (
-                f"He entendido:\n"
-                f"👤 Alumno: *{parsed['alumno']}*\n"
-                f"📝 Prueba: *{parsed['prueba']}*\n"
-                f"🔢 Nota: *{parsed['nota']}*\n\n"
-                f"No encuentro a *{parsed['alumno']}* en la hoja. "
-                f"¿Está bien escrito el nombre?"
+                f"No encuentro a *{parsed['alumno']}* en la pestaña *{parsed['pestana']}*.\n\n"
+                f"Pestañas disponibles:\n"
+                + "\n".join([f"{i+1}. {t}" for i, t in enumerate(tabs)])
+                + f"\n\nSi está en otra pestaña, añade el número al inicio:\n"
+                f"*2 {parsed['alumno']}, {parsed['prueba']}, {parsed['nota']}*"
             )
 
     pending_grades[chat_id] = {
@@ -141,21 +146,48 @@ async def handle_single_grade(text: str, chat_id: int) -> str:
 
 
 async def handle_batch(text: str, chat_id: int) -> str:
-    result = parse_batch_grades(text)
+    tabs = list_tabs()
+    if not tabs:
+        return "❌ No puedo conectar con Google Sheets ahora mismo."
+
+    result = parse_batch_grades(text, tabs)
     if not result:
-        return "No he entendido el formato. Dime así:\n*Cálculo 26 mayo. Alicia 5,5; Sofía 7; Rodrigo 9*"
+        return (
+            "No he entendido el formato. Dime así:\n"
+            "*Cálculo 26 mayo. Alicia 5,5; Sofía 7; Rodrigo 9*\n\n"
+            "O para otra pestaña añade el número al inicio:\n"
+            "*2 Lectura 26 mayo. Alicia 8; Sofía 9*"
+        )
 
     prueba, tab, grades = result
-    tabs = list_tabs()
-    if tabs and tab not in tabs:
-        tab = tabs[0]
 
-    resumen = f"📋 Voy a guardar estas notas en *{tab}*:\n📝 Prueba: *{prueba}*\n\n"
+    # Comprobar si la columna existe
+    from integrations.sheets import get_spreadsheet, find_test_col
+    try:
+        sh = get_spreadsheet()
+        ws = sh.worksheet(tab)
+        headers = ws.row_values(1)
+        col_idx, col_found = find_test_col(headers, prueba)
+    except Exception:
+        col_idx = None
+        col_found = None
+
+    resumen = f"📋 *{prueba}* en pestaña *{tab}*\n\n"
     for g in grades:
         resumen += f"• {g['student']}: *{g['grade']}*\n"
-    resumen += f"\n¿Lo guardo todo? *sí* o *no*"
 
-    pending_batch[chat_id] = {'tab': tab, 'prueba': prueba, 'grades': grades}
+    if col_idx is None:
+        resumen += f"\n⚠️ La columna *{prueba}* no existe. Se creará automáticamente."
+
+    resumen += f"\n\n¿Lo guardo? *sí* o *no*\n"
+    resumen += "_(Pestañas: " + ", ".join([f"{i+1}={t}" for i, t in enumerate(tabs)]) + ")_"
+
+    pending_batch[chat_id] = {
+        'tab': tab,
+        'prueba': prueba,
+        'grades': grades,
+        'col_idx': col_idx
+    }
     return resumen
 
 
@@ -166,7 +198,7 @@ async def confirm_grade(chat_id: int) -> str:
     success = write_grade(pending['tab'], pending['row'], pending['col'], pending['nota'])
     del pending_grades[chat_id]
     if success:
-        return f"✅ Guardado: *{pending['alumno']}* → {pending['prueba']} → *{pending['nota']}*"
+        return f"✅ *{pending['alumno']}* → {pending['prueba']} → *{pending['nota']}*"
     return "❌ Error escribiendo en la hoja."
 
 
@@ -174,11 +206,27 @@ async def confirm_batch(chat_id: int) -> str:
     pending = pending_batch.get(chat_id)
     if not pending:
         return "No hay notas pendientes."
-    ok, fallos = write_grades_batch(pending['tab'], pending['grades'])
+
+    tab = pending['tab']
+    prueba = pending['prueba']
+    grades = pending['grades']
+    col_idx = pending.get('col_idx')
+
+    # Crear columna si no existe
+    if col_idx is None:
+        col_idx = create_test_column(tab, prueba)
+        if not col_idx:
+            del pending_batch[chat_id]
+            return "❌ Error creando la columna."
+    else:
+        col_idx = col_idx + 1  # convertir a 1-based
+
+    ok, fallos, no_encontrados = write_grades_batch(tab, col_idx, grades)
     del pending_batch[chat_id]
-    msg = f"✅ Guardadas {ok} notas en *{pending['tab']}*."
+
+    msg = f"✅ {ok} notas guardadas en *{tab}* → *{prueba}*"
     if fallos:
-        msg += f"\n⚠️ {fallos} no encontradas — revisa nombres."
+        msg += f"\n⚠️ No encontrados: {', '.join(no_encontrados)}"
     return msg
 
 
@@ -186,19 +234,19 @@ async def create_col_and_continue(chat_id: int) -> str:
     pending = pending_new_col.get(chat_id)
     if not pending:
         return "No hay nada pendiente."
+
     col = create_test_column(pending['tab'], pending['prueba'])
     del pending_new_col[chat_id]
+
     if not col:
         return "❌ Error creando la columna."
 
-    # Ahora buscar la celda y guardar la nota
-    cell = find_cell_all_tabs(pending['alumno'], pending['prueba'])
-    if not cell:
-        return f"✅ Columna *{pending['prueba']}* creada. Ahora dime la nota de nuevo."
-
-    success = write_grade(cell['tab'], cell['row'], col, pending['nota'])
+    success = write_grade(pending['tab'], pending['row'], col, pending['nota'])
     if success:
-        return f"✅ Columna creada y nota guardada:\n*{cell['student_found']}* → {pending['prueba']} → *{pending['nota']}*"
+        return (
+            f"✅ Columna *{pending['prueba']}* creada y nota guardada:\n"
+            f"*{pending['student_found']}* → {pending['prueba']} → *{pending['nota']}*"
+        )
     return f"✅ Columna *{pending['prueba']}* creada pero error guardando la nota."
 
 
