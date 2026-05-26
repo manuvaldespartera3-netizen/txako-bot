@@ -198,61 +198,56 @@ def parse_grade_command(text: str, available_tabs: list[str]) -> dict | None:
 
 def parse_batch_grades(text: str, available_tabs: list[str]) -> tuple | None:
     """
-    Parsea texto continuo sin separadores claros.
-    Formato Whisper: 'cálculo 26 de mayo Sofía 7 Rodrigo 9 Noel 8,25 África 5,25'
-    También acepta puntos, punto y coma, dos puntos como separadores.
+    Parsea cualquier formato que genere Whisper.
+    Ejemplos reales:
+      'cálculo 26 de mayo. Sofía 7, Rodrigo 9, Noel 8,25, África 5,25'
+      'cálculo 26 de mayo Sofía 7 Rodrigo 9 Noel 8,25 África 5,25'
+
+    Estrategia: buscar patrón PALABRA(S) NUMERO repetido.
+    Todo antes del primer par nombre+numero es la prueba.
     """
-    text = text.strip()
+    text = text.strip().rstrip('.')
 
     # Número de pestaña al inicio
     tab_idx = 0
-    match = re.match(r'^(\d+)\s+', text)
-    if match:
-        tab_idx = int(match.group(1)) - 1
-        text = text[match.end():]
+    m = re.match(r'^(\d+)\s+', text)
+    if m:
+        tab_idx = int(m.group(1)) - 1
+        text = text[m.end():]
 
-    # Tokenizar por espacios
-    tokens = text.replace(';', ' ').replace(':', ' ').split()
-    tokens = [t.strip('.,') for t in tokens if t.strip('.,')]
+    # Normalizar separadores: quitar puntos que no sean decimales
+    # Reemplazar ", " y ". " por espacio para tokenizar uniformemente
+    text_norm = re.sub(r'[.,]\s+', ' ', text)
+    text_norm = re.sub(r'\s+', ' ', text_norm).strip()
 
-    # Encontrar primer token numérico — todo antes es la prueba
-    prueba_tokens = []
-    resto_tokens = []
-    encontrado_numero = False
-    for i, t in enumerate(tokens):
-        if not encontrado_numero and es_numero(t):
-            # El token anterior a este número es el último del nombre del primer alumno
-            # Los tokens hasta i-1 inclusive son prueba + primer nombre
-            # Retroceder: el último token antes del número es parte del primer nombre
-            encontrado_numero = True
-            # prueba = todo hasta i-2, primer_nombre = tokens[i-1]
-            resto_tokens = tokens[i-1:]  # desde el primer nombre
-            prueba_tokens = tokens[:i-1]
-            break
-        if not encontrado_numero:
-            prueba_tokens.append(t)
+    # Buscar todos los patrones NOMBRE NUMERO usando regex
+    # Patron: una o dos palabras capitalizadas seguidas de un número
+    patron = re.compile(
+        r'([A-ZÁÉÍÓÚÑ][a-záéíóúñA-ZÁÉÍÓÚÑ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñA-ZÁÉÍÓÚÑ]+)?)'
+        r'\s+'
+        r'(\d+(?:[.,]\d+)?)'
+    )
 
-    if not encontrado_numero or not prueba_tokens:
+    matches = list(patron.finditer(text_norm))
+
+    if len(matches) < 2:
+        logger.warning(f"Batch: menos de 2 pares nombre+nota en: {text_norm}")
         return None
 
-    prueba = ' '.join(prueba_tokens)
+    # La prueba es todo lo que va antes del primer match
+    primer_match_start = matches[0].start()
+    prueba = text_norm[:primer_match_start].strip().rstrip('.,').strip()
 
-    # Ahora parsear resto_tokens: nombre nota nombre nota...
-    # Los números son notas, las palabras entre números son nombres
+    if not prueba:
+        logger.warning("Batch: no se encontró prueba")
+        return None
+
     grades = []
-    nombre_actual = []
-    for t in resto_tokens:
-        if es_numero(t):
-            if nombre_actual:
-                nombre = ' '.join(nombre_actual)
-                nota = normalizar_nota(t)
-                grades.append({'student': nombre, 'grade': nota})
-                nombre_actual = []
-        else:
-            nombre_actual.append(t)
-
-    if not grades:
-        return None
+    for match in matches:
+        nombre = match.group(1).strip()
+        nota = normalizar_nota(match.group(2))
+        grades.append({'student': nombre, 'grade': nota})
+        logger.info(f"Batch par: {nombre} → {nota}")
 
     if available_tabs:
         tab_idx = max(0, min(tab_idx, len(available_tabs) - 1))
@@ -260,5 +255,5 @@ def parse_batch_grades(text: str, available_tabs: list[str]) -> tuple | None:
     else:
         tab_name = 'DATOS'
 
-    logger.info(f"Batch → prueba:{prueba} tab:{tab_name} alumnos:{[g['student'] for g in grades]}")
+    logger.info(f"Batch final → prueba:'{prueba}' tab:{tab_name} alumnos:{len(grades)}")
     return prueba, tab_name, grades
