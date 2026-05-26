@@ -163,32 +163,24 @@ def normalizar_nota(nota_str: str) -> str:
 
 def parse_grade_command(text: str, available_tabs: list[str]) -> dict | None:
     text = text.strip().rstrip('.')
-
-    # Detectar número de pestaña al inicio
     tab_idx = 0
     match = re.match(r'^(\d+)\s+', text)
     if match:
         tab_idx = int(match.group(1)) - 1
         text = text[match.end():]
-
     partes = [p.strip() for p in text.split(',')]
     if len(partes) < 3:
         partes = [p.strip() for p in text.split('.')]
     if len(partes) < 3:
         return None
-
     alumno = partes[0]
     prueba = partes[1]
-    nota_raw = partes[2]
-
-    nota = normalizar_nota(nota_raw)
-
+    nota = normalizar_nota(partes[2])
     if available_tabs:
         tab_idx = max(0, min(tab_idx, len(available_tabs) - 1))
         pestana = available_tabs[tab_idx]
     else:
         pestana = 'DATOS'
-
     logger.info(f"Parseado → alumno:{alumno} prueba:{prueba} nota:{nota} pestaña:{pestana}")
     return {
         'alumno': alumno,
@@ -199,28 +191,32 @@ def parse_grade_command(text: str, available_tabs: list[str]) -> dict | None:
     }
 
 def parse_batch_grades(text: str, available_tabs: list[str]) -> tuple | None:
+    """
+    Formatos aceptados:
+    - 'Cálculo 26 mayo: Alicia 5,5; Sofía 7; Rodrigo 9'
+    - 'Cálculo 26 mayo. Alicia 5,5; Sofía 7'
+    - '2 Cálculo 26 mayo: Alicia 5,5; Sofía 7' (pestaña 2)
+    """
     text = text.strip()
 
-    # Detectar número de pestaña al inicio
+    # Número de pestaña al inicio
     tab_idx = 0
     match = re.match(r'^(\d+)\s+', text)
     if match:
         tab_idx = int(match.group(1)) - 1
         text = text[match.end():]
 
-    # Separar prueba del resto
-    if '.' in text:
-        parts = text.split('.', 1)
-        prueba = parts[0].strip()
-        resto = parts[1].strip()
-    elif '\n' in text:
-        parts = text.split('\n', 1)
-        prueba = parts[0].strip()
-        resto = parts[1].strip()
-    else:
-        return None
+    # Separar prueba de alumnos por ':', '.', o salto de línea
+    prueba = None
+    resto = None
+    for sep in [':', '.', '\n']:
+        if sep in text:
+            parts = text.split(sep, 1)
+            prueba = parts[0].strip()
+            resto = parts[1].strip()
+            break
 
-    if not resto:
+    if not prueba or not resto:
         return None
 
     # Parsear alumnos y notas
@@ -234,7 +230,6 @@ def parse_batch_grades(text: str, available_tabs: list[str]) -> tuple | None:
         item = item.strip().rstrip('.')
         if not item:
             continue
-        # Último token es la nota
         tokens = item.rsplit(' ', 1)
         if len(tokens) == 2:
             nombre = tokens[0].strip()
