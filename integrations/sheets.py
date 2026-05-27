@@ -19,7 +19,6 @@ def get_sheet_client() -> gspread.Client:
     if raw.startswith('"') and raw.endswith('"'):
         raw = raw[1:-1]
     raw = raw.replace('\\"', '"').replace('\\\\n', '\\n')
-    logger.info(f"CREDENTIALS inicio: {repr(raw[:30])}")
     creds_dict = json.loads(raw)
     creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     return gspread.authorize(creds)
@@ -160,13 +159,6 @@ def normalizar_nota(nota_str: str) -> str:
     except Exception:
         return nota_str
 
-def es_numero(s: str) -> bool:
-    try:
-        float(s.replace(',', '.'))
-        return True
-    except Exception:
-        return False
-
 def parse_grade_command(text: str, available_tabs: list[str]) -> dict | None:
     text = text.strip().rstrip('.')
     tab_idx = 0
@@ -187,7 +179,6 @@ def parse_grade_command(text: str, available_tabs: list[str]) -> dict | None:
         pestana = available_tabs[tab_idx]
     else:
         pestana = 'DATOS'
-    logger.info(f"Parseado → alumno:{alumno} prueba:{prueba} nota:{nota} pestaña:{pestana}")
     return {
         'alumno': alumno,
         'prueba': prueba,
@@ -196,85 +187,76 @@ def parse_grade_command(text: str, available_tabs: list[str]) -> dict | None:
         'valido': True
     }
 
-def parse_batch_grades(text: str, available_tabs: list[str]) -> tuple | None:
+def parse_batch_con_gemini(text: str, available_tabs: list[str]) -> tuple | None:
     """
-    Parsea texto de Whisper sin separadores claros.
-    Ejemplo: 'Tutoría Calculo 26 de mayo Sofía 7 Rodrigo 9 Noel 8,25 África 5,25'
-
-    Estrategia:
-    1. Tokenizar por espacios
-    2. Recorrer tokens: cuando un token es número, el anterior es nota
-       y los tokens entre el número anterior y este nombre son el nombre
-    3. Todo antes del primer nombre+número es la prueba
+    Usa Gemini para extraer prueba y lista de alumnos+notas del texto.
+    Robusto ante cualquier formato que genere Whisper.
     """
-    text = text.strip().rstrip('.')
+    import google.generativeai as genai
+    import os
+    genai.configure(api_key=os.environ.get('GEMINI_API_KEY', ''))
+    model = genai.GenerativeModel('gemini-2.0-flash-exp')
 
-    # Número de pestaña al inicio
-    tab_idx = 0
-    m = re.match(r'^(\d+)\s+', text)
-    if m:
-        tab_idx = int(m.group(1)) - 1
-        text = text[m.end():]
+    tabs_str = ', '.join(available_tabs) if available_tabs else 'DATOS'
 
-    # Limpiar separadores innecesarios manteniendo decimales
-    # Convertir ", " y ". " en espacio pero NO "," dentro de números
-    text_limpio = re.sub(r'(?<=\D)[,.](?=\s)', ' ', text)
-    text_limpio = re.sub(r'(?<=\s)[,.](?=\s)', ' ', text_limpio)
-    text_limpio = re.sub(r'\s+', ' ', text_limpio).strip()
+    prompt = f"""Eres un asistente que extrae calificaciones de alumnos de un texto dictado por voz.
 
-    tokens = text_limpio.split()
+El texto puede tener errores de transcripción, números mal separados (ej: "8, 25" significa 8,25), 
+fechas dentro del nombre de la prueba (ej: "27 de mayo"), etc.
 
-    # Identificar posiciones de números
-    posiciones_numero = []
-    for i, t in enumerate(tokens):
-        if es_numero(t.replace(',', '.')):
-            posiciones_numero.append(i)
+Texto: "{text}"
 
-    if len(posiciones_numero) < 2:
-        logger.warning(f"Batch: menos de 2 números en: {text_limpio}")
+Pestañas disponibles: {tabs_str}
+
+Extrae:
+- prueba: el nombre completo de la prueba incluyendo la fecha si la hay (ej: "Cálculo 27 de mayo")
+- pestana: la pestaña más apropiada de las disponibles (por defecto la primera)
+- alumnos: lista de pares nombre+nota
+
+Responde SOLO con JSON sin markdown:
+{{
+  "prueba": "nombre de la prueba con fecha",
+  "pestana": "DATOS",
+  "alumnos": [
+    {{"nombre": "Sofía", "nota": "7"}},
+    {{"nombre": "Rodrigo", "nota": "9"}},
+    {{"nombre": "Noel", "nota": "8,25"}},
+    {{"nombre": "África", "nota": "5,25"}}
+  ]
+}}
+
+Notas importantes:
+- Las notas decimales van con coma: 8,25 no 8.25
+- Si un número va seguido de "de" o un mes, es parte de la fecha, no una nota
+- Si hay "8, 25" separado por coma y espacio, es el decimal 8,25
+- Devuelve al menos 2 alumnos o {{"valido": false}}
+"""
+
+    try:
+        response = model.generate_content(prompt)
+        raw = response.text.strip().replace('```json', '').replace('```', '').strip()
+        data = json.loads(raw)
+
+        if not data.get('alumnos') or len(data['alumnos']) < 2:
+            return None
+
+        prueba = data['prueba']
+        pestana = data.get('pestana', available_tabs[0] if available_tabs else 'DATOS')
+
+        # Verificar que la pestaña existe
+        if pestana not in available_tabs and available_tabs:
+            pestana = available_tabs[0]
+
+        grades = []
+        for a in data['alumnos']:
+            nombre = a.get('nombre', '').strip()
+            nota = a.get('nota', '').strip()
+            if nombre and nota:
+                grades.append({'student': nombre, 'grade': nota})
+
+        logger.info(f"Gemini batch → prueba:'{prueba}' pestana:{pestana} alumnos:{[g['student'] for g in grades]}")
+        return prueba, pestana, grades
+
+    except Exception as e:
+        logger.error(f"Error Gemini batch: {e}")
         return None
-
-    # El primer número indica fin del primer nombre
-    # Todo antes del token anterior al primer número es la prueba
-    primer_num_pos = posiciones_numero[0]
-
-    # La prueba es todo hasta el token anterior al primer número
-    # El nombre del primer alumno es el token justo antes del primer número
-    if primer_num_pos < 1:
-        return None
-
-    prueba_tokens = tokens[:primer_num_pos - 1]
-    prueba = ' '.join(prueba_tokens).strip()
-
-    if not prueba:
-        return None
-
-    # Extraer pares nombre+nota
-    grades = []
-    for idx, num_pos in enumerate(posiciones_numero):
-        nota = normalizar_nota(tokens[num_pos].replace(',', '.'))
-
-        # El nombre va desde el token después del número anterior hasta este número - 1
-        if idx == 0:
-            nombre_start = primer_num_pos - 1
-        else:
-            nombre_start = posiciones_numero[idx - 1] + 1
-
-        nombre_tokens = tokens[nombre_start:num_pos]
-        nombre = ' '.join(nombre_tokens).strip()
-
-        if nombre and nota:
-            grades.append({'student': nombre, 'grade': nota})
-            logger.info(f"Batch par: '{nombre}' → {nota}")
-
-    if len(grades) < 2:
-        return None
-
-    if available_tabs:
-        tab_idx = max(0, min(tab_idx, len(available_tabs) - 1))
-        tab_name = available_tabs[tab_idx]
-    else:
-        tab_name = 'DATOS'
-
-    logger.info(f"Batch final → prueba:'{prueba}' tab:{tab_name} alumnos:{len(grades)}")
-    return prueba, tab_name, grades
