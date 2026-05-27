@@ -195,7 +195,7 @@ def parse_batch_con_gemini(text: str, available_tabs: list[str]) -> tuple | None
     import google.generativeai as genai
     import os
     genai.configure(api_key=os.environ.get('GEMINI_API_KEY', ''))
-    model = genai.GenerativeModel('gemini-2.0-flash-exp')
+    model = genai.GenerativeModel('gemini-1.5-flash')
 
     tabs_str = ', '.join(available_tabs) if available_tabs else 'DATOS'
 
@@ -243,7 +243,6 @@ Notas importantes:
         prueba = data['prueba']
         pestana = data.get('pestana', available_tabs[0] if available_tabs else 'DATOS')
 
-        # Verificar que la pestaña existe
         if pestana not in available_tabs and available_tabs:
             pestana = available_tabs[0]
 
