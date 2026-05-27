@@ -2,7 +2,7 @@
 import logging, re
 import gemini as gemini_module
 from integrations.sheets import (
-    list_tabs, parse_grade_command, parse_batch_grades,
+    list_tabs, parse_grade_command, parse_batch_con_gemini,
     find_cell, find_student_in_tab, write_grade, write_grades_batch,
     create_test_column
 )
@@ -18,25 +18,30 @@ Ayuda con gestión de alumnos, observaciones e informes para familias.
 Responde en español, de forma directa y práctica."""
 
 def looks_like_batch(text: str) -> bool:
-    """
-    Detecta si el texto contiene múltiples pares nombre+número.
-    Funciona con cualquier formato que genere Whisper.
-    """
-    text_norm = re.sub(r'[.,]\s+', ' ', text)
-    patron = re.compile(
-        r'([A-ZÁÉÍÓÚÑ][a-záéíóúñA-ZÁÉÍÓÚÑ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñA-ZÁÉÍÓÚÑ]+)?)'
-        r'\s+'
-        r'(\d+(?:[.,]\d+)?)'
-    )
-    matches = list(patron.finditer(text_norm))
-    return len(matches) >= 2
+    """Detecta si hay varios alumnos con notas — al menos 2 números en el texto."""
+    numeros = re.findall(r'\b\d+(?:[.,]\s*\d+)?\b', text)
+    # Filtrar números que son claramente fechas (seguidos de mes)
+    meses = {'enero','febrero','marzo','abril','mayo','junio',
+             'julio','agosto','septiembre','octubre','noviembre','diciembre','de'}
+    tokens = text.lower().split()
+    notas_reales = 0
+    for i, t in enumerate(tokens):
+        t_limpio = t.rstrip('.,')
+        try:
+            float(t_limpio.replace(',', '.'))
+            siguiente = tokens[i+1] if i+1 < len(tokens) else ''
+            if siguiente not in meses:
+                notas_reales += 1
+        except Exception:
+            pass
+    return notas_reales >= 2
 
 def looks_like_grade(text: str) -> bool:
     text_lower = text.lower()
     has_number = bool(re.search(r'\d', text))
     grade_words = ['cálculo', 'calculo', 'examen', 'prueba', 'test',
                    'lectura', 'dictado', 'matematicas', 'matemáticas',
-                   'lengua', 'trimestre', 'nota', 'calificacion']
+                   'lengua', 'trimestre', 'nota', 'calificacion', 'problemas']
     has_keyword = any(k in text_lower for k in grade_words)
     has_name = len(text.split()) >= 3
     return (has_number and has_keyword) or (has_number and has_name)
@@ -44,14 +49,13 @@ def looks_like_grade(text: str) -> bool:
 async def handle(text: str, chat_id: int, is_voice: bool = False) -> str:
     text_lower = text.lower().strip()
 
-    # ── Confirmación nota individual ──────────────────────
+    # ── Confirmaciones pendientes ─────────────────────────
     if chat_id in pending_grades:
         if text_lower in ['si', 'sí', 'yes', 'confirmar', 'ok', 'correcto', 'vale']:
             return await confirm_grade(chat_id)
         elif text_lower in ['no', 'cancelar', 'cancel']:
             return cancel_grade(chat_id)
 
-    # ── Confirmación batch ────────────────────────────────
     if chat_id in pending_batch:
         if text_lower in ['si', 'sí', 'yes', 'confirmar', 'ok', 'correcto', 'vale']:
             return await confirm_batch(chat_id)
@@ -59,7 +63,6 @@ async def handle(text: str, chat_id: int, is_voice: bool = False) -> str:
             del pending_batch[chat_id]
             return "❌ Cancelado."
 
-    # ── Confirmación crear columna nueva ──────────────────
     if chat_id in pending_new_col:
         if text_lower in ['si', 'sí', 'yes', 'ok', 'vale', 'crear', 'crea']:
             return await create_col_and_continue(chat_id)
@@ -72,7 +75,7 @@ async def handle(text: str, chat_id: int, is_voice: bool = False) -> str:
         prompt = SYSTEM + f"\n\nGenera un informe de tutoría profesional y cercano para la familia. Máximo 200 palabras.\n\nTxako dice: {text}"
         return gemini_module.ask(prompt)
 
-    # ── Batch primero (más específico) ────────────────────
+    # ── Batch: varios alumnos ─────────────────────────────
     if looks_like_batch(text):
         return await handle_batch(text, chat_id)
 
@@ -93,10 +96,8 @@ async def handle_single_grade(text: str, chat_id: int) -> str:
     parsed = parse_grade_command(text, tabs)
     if not parsed:
         return (
-            f"No he entendido bien la nota. Dime por ejemplo:\n"
-            f"*Lucía Martínez, cálculo 22 mayo, 7*\n\n"
-            f"Pestañas disponibles:\n"
-            + "\n".join([f"{i+1}. {t}" for i, t in enumerate(tabs)])
+            f"No he entendido bien. Dime por ejemplo:\n"
+            f"*Lucía Martínez, cálculo 22 mayo, 7*"
         )
 
     cell = find_cell(parsed['pestana'], parsed['alumno'], parsed['prueba'])
@@ -113,20 +114,16 @@ async def handle_single_grade(text: str, chat_id: int) -> str:
                 'student_found': alumno_info['student_found']
             }
             return (
-                f"👤 Alumno: *{alumno_info['student_found']}*\n"
-                f"🗂 Pestaña: *{parsed['pestana']}*\n"
+                f"👤 *{alumno_info['student_found']}* encontrado en *{parsed['pestana']}*\n"
                 f"📝 La columna *{parsed['prueba']}* no existe todavía.\n\n"
-                f"¿La creo? *sí* o *no*\n\n"
-                f"_(Pestañas: "
-                + ", ".join([f"{i+1}={t}" for i, t in enumerate(tabs)])
-                + ")_"
+                f"¿La creo? *sí* o *no*\n"
+                f"_(Pestañas: " + ", ".join([f"{i+1}={t}" for i, t in enumerate(tabs)]) + ")_"
             )
         else:
             return (
-                f"No encuentro a *{parsed['alumno']}* en la pestaña *{parsed['pestana']}*.\n\n"
-                f"Pestañas:\n"
-                + "\n".join([f"{i+1}. {t}" for i, t in enumerate(tabs)])
-                + f"\n\nSi está en otra pestaña añade el número al inicio:\n"
+                f"No encuentro a *{parsed['alumno']}* en *{parsed['pestana']}*.\n"
+                f"Pestañas: " + ", ".join([f"{i+1}={t}" for i, t in enumerate(tabs)])
+                + f"\n\nAñade número al inicio para cambiar pestaña:\n"
                 f"*2 {parsed['alumno']}, {parsed['prueba']}, {parsed['nota']}*"
             )
 
@@ -143,8 +140,8 @@ async def handle_single_grade(text: str, chat_id: int) -> str:
         f"📋 Confirma:\n\n"
         f"👤 *{cell['student_found']}*\n"
         f"📝 *{cell['test_found']}*\n"
-        f"🗂 Pestaña: *{cell['tab']}*\n"
-        f"🔢 Nota: *{parsed['nota']}*\n\n"
+        f"🗂 *{cell['tab']}*\n"
+        f"🔢 *{parsed['nota']}*\n\n"
         f"¿Lo guardo? *sí* o *no*"
     )
 
@@ -154,12 +151,9 @@ async def handle_batch(text: str, chat_id: int) -> str:
     if not tabs:
         return "❌ No puedo conectar con Google Sheets ahora mismo."
 
-    result = parse_batch_grades(text, tabs)
+    result = parse_batch_con_gemini(text, tabs)
     if not result:
-        return (
-            "No he entendido el formato. Habla así:\n"
-            "*Cálculo 26 mayo. Sofía 7, Rodrigo 9, Noel 8,25*"
-        )
+        return "No he entendido las notas. Intenta de nuevo."
 
     prueba, tab, grades = result
 
@@ -168,19 +162,18 @@ async def handle_batch(text: str, chat_id: int) -> str:
         sh = get_spreadsheet()
         ws = sh.worksheet(tab)
         headers = ws.row_values(1)
-        col_idx, col_found = find_test_col(headers, prueba)
+        col_idx, _ = find_test_col(headers, prueba)
     except Exception:
         col_idx = None
 
-    resumen = f"📋 *{prueba}* en pestaña *{tab}*\n\n"
+    resumen = f"📋 *{prueba}* → pestaña *{tab}*\n\n"
     for g in grades:
         resumen += f"• {g['student']}: *{g['grade']}*\n"
 
     if col_idx is None:
-        resumen += f"\n⚠️ La columna *{prueba}* no existe. Se creará."
+        resumen += f"\n⚠️ Columna nueva — se creará automáticamente."
 
-    resumen += f"\n\n¿Lo guardo? *sí* o *no*\n"
-    resumen += "_(Pestañas: " + ", ".join([f"{i+1}={t}" for i, t in enumerate(tabs)]) + ")_"
+    resumen += f"\n\n¿Lo guardo? *sí* o *no*"
 
     pending_batch[chat_id] = {
         'tab': tab,
@@ -206,12 +199,10 @@ async def confirm_batch(chat_id: int) -> str:
     pending = pending_batch.get(chat_id)
     if not pending:
         return "No hay notas pendientes."
-
     tab = pending['tab']
     prueba = pending['prueba']
     grades = pending['grades']
     col_idx = pending.get('col_idx')
-
     if col_idx is None:
         col_idx = create_test_column(tab, prueba)
         if not col_idx:
@@ -219,10 +210,8 @@ async def confirm_batch(chat_id: int) -> str:
             return "❌ Error creando la columna."
     else:
         col_idx = col_idx + 1
-
     ok, fallos, no_encontrados = write_grades_batch(tab, col_idx, grades)
     del pending_batch[chat_id]
-
     msg = f"✅ {ok} notas guardadas en *{tab}* → *{prueba}*"
     if fallos:
         msg += f"\n⚠️ No encontrados: {', '.join(no_encontrados)}"
