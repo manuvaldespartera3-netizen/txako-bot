@@ -198,13 +198,14 @@ def parse_grade_command(text: str, available_tabs: list[str]) -> dict | None:
 
 def parse_batch_grades(text: str, available_tabs: list[str]) -> tuple | None:
     """
-    Parsea cualquier formato que genere Whisper.
-    Ejemplos reales:
-      'cálculo 26 de mayo. Sofía 7, Rodrigo 9, Noel 8,25, África 5,25'
-      'cálculo 26 de mayo Sofía 7 Rodrigo 9 Noel 8,25 África 5,25'
+    Parsea texto de Whisper sin separadores claros.
+    Ejemplo: 'Tutoría Calculo 26 de mayo Sofía 7 Rodrigo 9 Noel 8,25 África 5,25'
 
-    Estrategia: buscar patrón PALABRA(S) NUMERO repetido.
-    Todo antes del primer par nombre+numero es la prueba.
+    Estrategia:
+    1. Tokenizar por espacios
+    2. Recorrer tokens: cuando un token es número, el anterior es nota
+       y los tokens entre el número anterior y este nombre son el nombre
+    3. Todo antes del primer nombre+número es la prueba
     """
     text = text.strip().rstrip('.')
 
@@ -215,39 +216,59 @@ def parse_batch_grades(text: str, available_tabs: list[str]) -> tuple | None:
         tab_idx = int(m.group(1)) - 1
         text = text[m.end():]
 
-    # Normalizar separadores: quitar puntos que no sean decimales
-    # Reemplazar ", " y ". " por espacio para tokenizar uniformemente
-    text_norm = re.sub(r'[.,]\s+', ' ', text)
-    text_norm = re.sub(r'\s+', ' ', text_norm).strip()
+    # Limpiar separadores innecesarios manteniendo decimales
+    # Convertir ", " y ". " en espacio pero NO "," dentro de números
+    text_limpio = re.sub(r'(?<=\D)[,.](?=\s)', ' ', text)
+    text_limpio = re.sub(r'(?<=\s)[,.](?=\s)', ' ', text_limpio)
+    text_limpio = re.sub(r'\s+', ' ', text_limpio).strip()
 
-    # Buscar todos los patrones NOMBRE NUMERO usando regex
-    # Patron: una o dos palabras capitalizadas seguidas de un número
-    patron = re.compile(
-        r'([A-ZÁÉÍÓÚÑ][a-záéíóúñA-ZÁÉÍÓÚÑ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñA-ZÁÉÍÓÚÑ]+)?)'
-        r'\s+'
-        r'(\d+(?:[.,]\d+)?)'
-    )
+    tokens = text_limpio.split()
 
-    matches = list(patron.finditer(text_norm))
+    # Identificar posiciones de números
+    posiciones_numero = []
+    for i, t in enumerate(tokens):
+        if es_numero(t.replace(',', '.')):
+            posiciones_numero.append(i)
 
-    if len(matches) < 2:
-        logger.warning(f"Batch: menos de 2 pares nombre+nota en: {text_norm}")
+    if len(posiciones_numero) < 2:
+        logger.warning(f"Batch: menos de 2 números en: {text_limpio}")
         return None
 
-    # La prueba es todo lo que va antes del primer match
-    primer_match_start = matches[0].start()
-    prueba = text_norm[:primer_match_start].strip().rstrip('.,').strip()
+    # El primer número indica fin del primer nombre
+    # Todo antes del token anterior al primer número es la prueba
+    primer_num_pos = posiciones_numero[0]
+
+    # La prueba es todo hasta el token anterior al primer número
+    # El nombre del primer alumno es el token justo antes del primer número
+    if primer_num_pos < 1:
+        return None
+
+    prueba_tokens = tokens[:primer_num_pos - 1]
+    prueba = ' '.join(prueba_tokens).strip()
 
     if not prueba:
-        logger.warning("Batch: no se encontró prueba")
         return None
 
+    # Extraer pares nombre+nota
     grades = []
-    for match in matches:
-        nombre = match.group(1).strip()
-        nota = normalizar_nota(match.group(2))
-        grades.append({'student': nombre, 'grade': nota})
-        logger.info(f"Batch par: {nombre} → {nota}")
+    for idx, num_pos in enumerate(posiciones_numero):
+        nota = normalizar_nota(tokens[num_pos].replace(',', '.'))
+
+        # El nombre va desde el token después del número anterior hasta este número - 1
+        if idx == 0:
+            nombre_start = primer_num_pos - 1
+        else:
+            nombre_start = posiciones_numero[idx - 1] + 1
+
+        nombre_tokens = tokens[nombre_start:num_pos]
+        nombre = ' '.join(nombre_tokens).strip()
+
+        if nombre and nota:
+            grades.append({'student': nombre, 'grade': nota})
+            logger.info(f"Batch par: '{nombre}' → {nota}")
+
+    if len(grades) < 2:
+        return None
 
     if available_tabs:
         tab_idx = max(0, min(tab_idx, len(available_tabs) - 1))
