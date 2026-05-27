@@ -18,23 +18,14 @@ Ayuda con gestión de alumnos, observaciones e informes para familias.
 Responde en español, de forma directa y práctica."""
 
 def looks_like_batch(text: str) -> bool:
-    """Detecta si hay varios alumnos con notas — al menos 2 números en el texto."""
-    numeros = re.findall(r'\b\d+(?:[.,]\s*\d+)?\b', text)
-    # Filtrar números que son claramente fechas (seguidos de mes)
-    meses = {'enero','febrero','marzo','abril','mayo','junio',
-             'julio','agosto','septiembre','octubre','noviembre','diciembre','de'}
-    tokens = text.lower().split()
-    notas_reales = 0
-    for i, t in enumerate(tokens):
-        t_limpio = t.rstrip('.,')
-        try:
-            float(t_limpio.replace(',', '.'))
-            siguiente = tokens[i+1] if i+1 < len(tokens) else ''
-            if siguiente not in meses:
-                notas_reales += 1
-        except Exception:
-            pass
-    return notas_reales >= 2
+    """
+    Si el texto tiene 3 o más palabras Y 2 o más números → es un batch.
+    Simple y robusto.
+    """
+    numeros = re.findall(r'\b\d+(?:[,\.]\d+)?\b', text)
+    palabras = text.split()
+    logger.info(f"looks_like_batch: {len(numeros)} números, {len(palabras)} palabras — texto: {text[:80]}")
+    return len(numeros) >= 2 and len(palabras) >= 5
 
 def looks_like_grade(text: str) -> bool:
     text_lower = text.lower()
@@ -49,7 +40,6 @@ def looks_like_grade(text: str) -> bool:
 async def handle(text: str, chat_id: int, is_voice: bool = False) -> str:
     text_lower = text.lower().strip()
 
-    # ── Confirmaciones pendientes ─────────────────────────
     if chat_id in pending_grades:
         if text_lower in ['si', 'sí', 'yes', 'confirmar', 'ok', 'correcto', 'vale']:
             return await confirm_grade(chat_id)
@@ -70,20 +60,17 @@ async def handle(text: str, chat_id: int, is_voice: bool = False) -> str:
             del pending_new_col[chat_id]
             return "❌ Cancelado."
 
-    # ── Informe para familia ──────────────────────────────
     if 'informe' in text_lower or 'familia' in text_lower:
         prompt = SYSTEM + f"\n\nGenera un informe de tutoría profesional y cercano para la familia. Máximo 200 palabras.\n\nTxako dice: {text}"
         return gemini_module.ask(prompt)
 
-    # ── Batch: varios alumnos ─────────────────────────────
+    # Batch primero — más palabras y más números
     if looks_like_batch(text):
         return await handle_batch(text, chat_id)
 
-    # ── Nota individual ───────────────────────────────────
     if looks_like_grade(text):
         return await handle_single_grade(text, chat_id)
 
-    # ── Consulta general ──────────────────────────────────
     prompt = SYSTEM + f"\n\nConsulta: {text}"
     return gemini_module.ask(prompt)
 
@@ -95,10 +82,7 @@ async def handle_single_grade(text: str, chat_id: int) -> str:
 
     parsed = parse_grade_command(text, tabs)
     if not parsed:
-        return (
-            f"No he entendido bien. Dime por ejemplo:\n"
-            f"*Lucía Martínez, cálculo 22 mayo, 7*"
-        )
+        return "No he entendido bien. Dime por ejemplo:\n*Lucía Martínez, cálculo 22 mayo, 7*"
 
     cell = find_cell(parsed['pestana'], parsed['alumno'], parsed['prueba'])
 
