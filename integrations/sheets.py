@@ -1,7 +1,7 @@
 """
 Integración Google Sheets.
 """
-import json, logging, re
+import json, logging, re, os, requests
 import gspread
 from google.oauth2.service_account import Credentials
 import config
@@ -189,15 +189,11 @@ def parse_grade_command(text: str, available_tabs: list[str]) -> dict | None:
 
 def parse_batch_con_gemini(text: str, available_tabs: list[str]) -> tuple | None:
     """
-    Usa Gemini para extraer prueba y lista de alumnos+notas del texto.
+    Usa Groq (Llama 3.3) para extraer prueba y lista de alumnos+notas.
     Robusto ante cualquier formato que genere Whisper.
     """
-    import google.generativeai as genai
-    import os
-    genai.configure(api_key=os.environ.get('GEMINI_API_KEY', ''))
-    model = genai.GenerativeModel('gemini-1.5-flash')
-
     tabs_str = ', '.join(available_tabs) if available_tabs else 'DATOS'
+    groq_key = os.environ.get('GROQ_API_KEY', '')
 
     prompt = f"""Eres un asistente que extrae calificaciones de alumnos de un texto dictado por voz.
 
@@ -213,49 +209,74 @@ Extrae:
 - pestana: la pestaña más apropiada de las disponibles (por defecto la primera)
 - alumnos: lista de pares nombre+nota
 
-Responde SOLO con JSON sin markdown:
+Responde SOLO con JSON sin markdown, sin explicaciones, solo el JSON puro:
 {{
   "prueba": "nombre de la prueba con fecha",
   "pestana": "DATOS",
   "alumnos": [
     {{"nombre": "Sofía", "nota": "7"}},
-    {{"nombre": "Rodrigo", "nota": "9"}},
+    {{"nombre": "Rodrigo", "nota": "9,5"}},
     {{"nombre": "Noel", "nota": "8,25"}},
-    {{"nombre": "África", "nota": "5,25"}}
+    {{"nombre": "África", "nota": "5,75"}}
   ]
 }}
 
-Notas importantes:
+Reglas:
 - Las notas decimales van con coma: 8,25 no 8.25
-- Si un número va seguido de "de" o un mes, es parte de la fecha, no una nota
+- Si un número va seguido de "de" o un mes (mayo, junio, etc), es parte de la fecha, no una nota
 - Si hay "8, 25" separado por coma y espacio, es el decimal 8,25
-- Devuelve al menos 2 alumnos o {{"valido": false}}
+- Ignora la palabra "tutoría" o "tutoria" si aparece al principio
 """
 
     try:
-        response = model.generate_content(prompt)
-        raw = response.text.strip().replace('```json', '').replace('```', '').strip()
-        data = json.loads(raw)
-
-        if not data.get('alumnos') or len(data['alumnos']) < 2:
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {groq_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "llama-3.3-70b-versatile",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 1024,
+                "temperature": 0
+            },
+            timeout=30
+        )
+        data = response.json()
+        if "choices" not in data:
+            logger.error(f"Groq error en batch: {data}")
             return None
 
-        prueba = data['prueba']
-        pestana = data.get('pestana', available_tabs[0] if available_tabs else 'DATOS')
+        raw = data["choices"][0]["message"]["content"].strip()
+        raw = raw.replace('```json', '').replace('```', '').strip()
+        # A veces el modelo añade texto antes/después del JSON
+        match = re.search(r'\{.*\}', raw, re.DOTALL)
+        if match:
+            raw = match.group(0)
+
+        parsed = json.loads(raw)
+
+        if not parsed.get('alumnos') or len(parsed['alumnos']) < 2:
+            logger.warning(f"Batch sin alumnos suficientes: {parsed}")
+            return None
+
+        prueba = parsed['prueba']
+        pestana = parsed.get('pestana', available_tabs[0] if available_tabs else 'DATOS')
 
         if pestana not in available_tabs and available_tabs:
             pestana = available_tabs[0]
 
         grades = []
-        for a in data['alumnos']:
+        for a in parsed['alumnos']:
             nombre = a.get('nombre', '').strip()
             nota = a.get('nota', '').strip()
             if nombre and nota:
                 grades.append({'student': nombre, 'grade': nota})
 
-        logger.info(f"Gemini batch → prueba:'{prueba}' pestana:{pestana} alumnos:{[g['student'] for g in grades]}")
+        logger.info(f"Groq batch → prueba:'{prueba}' pestana:{pestana} alumnos:{[g['student'] for g in grades]}")
         return prueba, pestana, grades
 
     except Exception as e:
-        logger.error(f"Error Gemini batch: {e}")
+        logger.error(f"Error Groq batch: {e}")
         return None
