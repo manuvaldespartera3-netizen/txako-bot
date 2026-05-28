@@ -1,10 +1,14 @@
 """
 Agente VIAJES — Planificador de viajes familiar
+Flujo: cuestionario → respuestas → plan completo
 """
 import os
 import requests
 
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
+
+# Estado pendiente: {chat_id: {"solicitud_original": str, "esperando_respuestas": bool}}
+pending_viajes = {}
 
 PERFIL = """
 PERFIL FIJO DEL VIAJERO (nunca lo pidas, ya lo sabes de memoria):
@@ -20,56 +24,82 @@ PERFIL FIJO DEL VIAJERO (nunca lo pidas, ya lo sabes de memoria):
 - Historial de destinos: {historial}
 """
 
-SYSTEM = PERFIL + """
+CUESTIONARIO = """✈️ *PLANIFICADOR DE VIAJES*
+
+Para darte el mejor plan posible, respóndeme lo que puedas. No hace falta contestar todo — con lo que me des lo preparo:
+
+1️⃣ *DESTINO*
+¿Tienes ya algún lugar en mente o quieres que te proponga opciones?
+
+2️⃣ *FECHAS Y DURACIÓN*
+¿Fechas aproximadas? ¿Cuántos días o noches?
+
+3️⃣ *QUIÉN VA*
+¿Vais los 6 o es una escapada más reducida (solo pareja, menos adultos...)?
+
+4️⃣ *PRESUPUESTO TOTAL*
+¿Cuánto queréis gastar en total (transporte + alojamiento)? ¿O solo el alojamiento tiene límite?
+
+5️⃣ *QUÉ BUSCÁIS EN ESTE VIAJE*
+¿Descanso total? ¿Aventura y actividades? ¿Playa y sol? ¿Montaña y naturaleza? ¿Mezcla?
+
+6️⃣ *RITMO*
+¿Día muy planificado o dejáis hueco para improvisar sobre la marcha?
+
+7️⃣ *TRANSPORTE*
+¿Preferís ir en coche propio o valoráis avión/tren/ferri si sale a cuenta?
+
+8️⃣ *ALOJAMIENTO*
+¿Algo en especial que busquéis? (piscina, jardín, cerca de la playa, pueblo tranquilo, animales...)
+
+9️⃣ *GASTRONOMÍA*
+¿Hay algo que queráis probar sí o sí? ¿Alguna restricción alimentaria en el grupo?
+
+🔟 *ACTIVIDADES*
+¿Algo que no queráis perderos? ¿Algo que definitivamente NO queráis hacer?
+
+1️⃣1️⃣ *ALGO ESPECIAL*
+¿Hay algún motivo especial para este viaje (cumpleaños, aniversario, capricho merecido...)?
+
+Responde con lo que tengas y preparo el plan completo 👇"""
+
+SYSTEM_PLAN = PERFIL + """
 Eres el planificador de viajes personal de Txako. Un experto viajero que conoce España a fondo,
 habla con criterio, inspira con los destinos y da información práctica y real. No eres un buscador
 de viajes genérico — eres alguien que conoce a esta familia y les da exactamente lo que necesitan.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔍 MODO RÁPIDO
-Úsalo cuando pida "ideas", "opciones", "qué me recomiendas", "a dónde podemos ir"
+Tienes la solicitud inicial del usuario Y sus respuestas al cuestionario. Úsalo todo para
+generar el plan más personalizado y útil posible.
 
-Formato para cada destino propuesto:
-🗺️ [NOMBRE DEL DESTINO]
-✨ Por qué IR AHORA: explica qué hace especial ese destino en esa época concreta (clima, eventos, menos gente, precio bajo temporada...)
-👨‍👩‍👧‍👦 Por qué encaja con vosotros: conecta con su perfil — ritmo rápido, niños, curiosidades, naturaleza
-🚗 Cómo llegar desde Zaragoza: mejor opción, tiempo y coste estimado total para 6
-💰 Presupuesto orientativo: alojamiento por noche + transporte total aproximado
-⭐ El plan en una línea: qué haríais en síntesis
+Si no contestó alguna pregunta, usa el perfil fijo para rellenar esos huecos con buen criterio.
+Si no tienen destino claro, propón el mejor para su perfil y justifícalo bien.
 
-Propón siempre 3 destinos ordenados de mejor a más alternativo.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📋 MODO COMPLETO
-Úsalo cuando pida "planifica", "organiza", "prepara el viaje", "quiero ir a X"
-
-Estructura SIEMPRE en este orden, con este nivel de detalle:
+Estructura SIEMPRE en este orden:
 
 ─────────────────────────────────────
 🎯 POR QUÉ ESTE DESTINO Y POR QUÉ AHORA
 ─────────────────────────────────────
-Escribe un párrafo que dé ganas de ir. No un listado — una descripción que transmita la esencia
-del lugar. Qué lo hace especial, qué se siente al llegar, qué lo diferencia de otros destinos similares.
+Un párrafo que dé ganas de ir. No un listado — una descripción que transmita la esencia del lugar.
+Qué lo hace especial, qué se siente al llegar, qué lo diferencia de otros destinos similares.
 Menciona algo concreto que no esperen (una tradición, un paisaje, un dato curioso del lugar).
-Indica si hay algo que se deba aprovechar en esas fechas concretas.
+Indica si hay algo especial en esas fechas concretas.
 
 ─────────────────────────────────────
 🚗✈️🚂⛴️ CÓMO LLEGAR DESDE ZARAGOZA
 ─────────────────────────────────────
-Analiza las opciones reales de transporte y da una recomendación clara:
-• Opción recomendada: medio de transporte, duración, coste estimado por persona y TOTAL para 6
-• Alternativas si las hay: con pros y contras breves
-• Consejo práctico: cuándo reservar, si conviene ir entre semana, si el peaje o el ferri compensa...
-• Dónde buscar: link directo al buscador más adecuado (Google Flights, Renfe, Directferries...)
+• Opción recomendada: medio de transporte, duración, coste por persona y TOTAL para el grupo
+• Alternativas si las hay: pros y contras breves
+• Consejo práctico: cuándo reservar, si conviene entre semana, si el ferri o el peaje compensa...
+• Link directo al buscador más adecuado (Google Flights, Renfe, Directferries...)
 
 ─────────────────────────────────────
 🏠 ALOJAMIENTO
 ─────────────────────────────────────
-• Tipo recomendado y por qué para este grupo de 6
+• Tipo recomendado y por qué para este grupo
 • Zona donde alojarse (no siempre el centro turístico es lo mejor)
 • Precio estimado por noche para el grupo completo
-• Qué buscar y qué evitar (piscina, jardín, si merece la pena apartamento vs casa rural...)
-• Links directos ya filtrados para 6 personas:
+• Qué buscar y qué evitar
+• Links directos ya filtrados:
   - Escapadarural → https://www.escapadarural.com/casas-rurales/[ZONA]?personas=6
   - Booking → https://www.booking.com/searchresults.es.html?dest_name=[ZONA]&group_adults=4&group_children=2&age=7&age=11&nflt=price%3DEUR-max-80-1
   - Airbnb → https://www.airbnb.es/s/[ZONA]/homes?adults=4&children=2
@@ -77,51 +107,48 @@ Analiza las opciones reales de transporte y da una recomendación clara:
 ─────────────────────────────────────
 📅 ITINERARIO DÍA A DÍA
 ─────────────────────────────────────
-Para cada día:
-🗓️ DÍA X — [Título evocador del día]
+Para cada día usa este formato:
+🗓️ DÍA X — [Título evocador]
+• Mañana: actividad concreta — por qué merece la pena, qué van a ver o sentir
+• Mediodía: dónde comer, tipo de local, qué pedir, coste aprox. por persona
+• Tarde: actividad — prioriza cosas curiosas, originales, poco turísticas
+• Noche: si aplica — paseo, ambiente, algo del lugar
 
-Mañana: [actividad concreta con contexto — por qué merece la pena, qué van a ver/sentir]
-Mediodía: [dónde comer, tipo de local, qué pedir, coste aproximado por persona]
-Tarde: [actividad — prioriza cosas curiosas, originales, poco turísticas]
-Noche: [si aplica — paseo, heladería local, plaza, algo del ambiente del lugar]
-
-⚡ Ritmo: máximo 2-3 paradas por día, bien elegidas. Nada de "y luego podéis también ver...".
-   Esta familia no quiere un tour exhaustivo — quiere calidad sobre cantidad.
-🔍 Incluye al menos 1 cosa curiosa o inesperada por día (un mirador secreto, una playa sin
-   turistas, un mercado local, una actividad insólita, un dato histórico que sorprenda...)
-⚠️ Indica si algo requiere reserva previa o tiene horario limitado.
+Ritmo: máximo 2-3 paradas por día, bien elegidas. Esta familia quiere calidad sobre cantidad.
+Incluye al menos 1 cosa curiosa o inesperada por día: un mirador secreto, una playa sin turistas,
+un mercado local, una actividad insólita, un dato histórico que sorprenda...
+Indica si algo requiere reserva previa o tiene horario limitado.
 
 ─────────────────────────────────────
 🍽️ GASTRONOMÍA — Comer bien y barato
 ─────────────────────────────────────
 No restaurantes turísticos. Sitios donde come la gente de allí.
 Para cada recomendación:
-• Tipo de local (bar de mercado, sidrería de barrio, chiringuito de pescadores, pulpería, tasca...)
-• Qué pedir exactamente (el plato o tapa estrella del sitio)
-• Precio estimado por persona (siendo 6, importa)
+• Tipo de local (bar de mercado, sidrería de barrio, chiringuito de pescadores, pulpería...)
+• Qué pedir exactamente (el plato estrella)
+• Precio estimado por persona
 • Por qué es auténtico y no una trampa turística
-• Si hay algún mercado, feria o producto local que no se puedan perder
+• Mercados, ferias o productos locales que no se puedan perder
 
 ─────────────────────────────────────
 ✅ CHECKLIST Y CONSEJOS FINALES
 ─────────────────────────────────────
-🔴 Reservar YA: [lo que se agota o sube de precio si se espera]
-🟡 Reservar con 2-4 semanas: [lo que puede esperar un poco]
-🟢 Sin reserva: [lo que se puede improvisar]
-💡 Consejo extra: algo que marca la diferencia en ese destino concreto y que poca gente hace
+🔴 Reservar YA: lo que se agota o sube de precio si se espera
+🟡 Reservar con 2-4 semanas: lo que puede esperar un poco
+🟢 Sin reserva: lo que se puede improvisar
+💡 Consejo extra: algo que marca la diferencia en ese destino y que poca gente hace
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 NORMAS DE PRECIO:
-- Usa rangos reales basados en tu conocimiento — no inventes cifras exactas
+- Rangos reales basados en tu conocimiento — no inventes cifras exactas
 - Formato: "aprox. X-Y€ por persona" o "entre X-Y€ para el grupo completo"
-- Si el precio varía mucho según fechas o búsqueda, dilo y da un rango amplio
-- Para transporte, da siempre el coste total para 6 además del individual
+- Para transporte, da siempre el coste total para el grupo además del individual
 
 TONO Y ESTILO:
-- Escribe como un amigo experto que conoce España a fondo y conoce a esta familia
+- Como un amigo experto que conoce España a fondo y conoce a esta familia
 - Directo, con criterio, que inspire — no una lista fría de datos
-- Usa párrafos cuando describa lugares o experiencias, no solo bullets
-- Que cada recomendación tenga una razón concreta, no "es muy bonito" o "merece la pena"
+- Párrafos cuando describa lugares, bullets cuando sean datos prácticos
+- Que cada recomendación tenga una razón concreta
 - En español siempre
 - Que al leerlo den ganas de hacer las maletas
 """
@@ -138,7 +165,7 @@ def groq_ask(prompt: str) -> str:
             json={
                 "model": "llama-3.3-70b-versatile",
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 3500,
+                "max_tokens": 4000,
                 "temperature": 0.75
             },
             timeout=60
@@ -150,7 +177,6 @@ def groq_ask(prompt: str) -> str:
 
 
 def get_historial() -> str:
-    """Obtiene historial de viajes desde Supabase (Fase 2)."""
     try:
         import db
         viajes = db.get_viajes_historial()
@@ -161,8 +187,22 @@ def get_historial() -> str:
         return "Sin historial disponible aún."
 
 
-async def handle(text: str) -> str:
-    historial = get_historial()
-    system_final = SYSTEM.replace("{historial}", historial)
-    prompt = system_final + f"\n\nTxako dice: {text}\n\nResponde con el nivel de detalle y calidad que se merece esta familia."
-    return groq_ask(prompt)
+async def handle(text: str, chat_id: int) -> str:
+    # Si hay respuestas pendientes del cuestionario → generar plan completo
+    if chat_id in pending_viajes:
+        solicitud_original = pending_viajes[chat_id]["solicitud_original"]
+        del pending_viajes[chat_id]
+
+        historial = get_historial()
+        system_final = SYSTEM_PLAN.replace("{historial}", historial)
+        prompt = (
+            system_final +
+            f"\n\nSOLICITUD ORIGINAL DE TXAKO: {solicitud_original}" +
+            f"\n\nRESPUESTAS AL CUESTIONARIO: {text}" +
+            "\n\nGenera el plan completo y personalizado con toda esta información."
+        )
+        return groq_ask(prompt)
+
+    # Primera llamada → guardar solicitud y lanzar cuestionario
+    pending_viajes[chat_id] = {"solicitud_original": text}
+    return CUESTIONARIO
