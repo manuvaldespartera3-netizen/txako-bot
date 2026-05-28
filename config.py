@@ -1,23 +1,17 @@
 import os
-
 # ─── TELEGRAM ─────────────────────────────────────────────
 TELEGRAM_TOKEN = os.environ['TELEGRAM_TOKEN']
 MY_CHAT_ID     = int(os.environ['MY_CHAT_ID'])
-
 # ─── IA ───────────────────────────────────────────────────
 GEMINI_API_KEY = os.environ['GEMINI_API_KEY']
-
 # ─── SUPABASE ─────────────────────────────────────────────
 SUPABASE_URL = os.environ['SUPABASE_URL']
 SUPABASE_KEY = os.environ['SUPABASE_KEY']
-
 # ─── GOOGLE SHEETS ────────────────────────────────────────
 GOOGLE_CREDENTIALS = os.environ.get('GOOGLE_CREDENTIALS', '')
 SHEETS_ID          = os.environ.get('GOOGLE_SHEET_ID', '')
-
 # ─── DOMINIOS ─────────────────────────────────────────────
-DOMAINS = ['ef', 'tutoria', 'recordatorios', 'racing', 'gastos', 'calculin', 'blasa', 'general']
-
+DOMAINS = ['ef', 'tutoria', 'recordatorios', 'racing', 'gastos', 'calculin', 'blasa', 'general', 'viajes']
 # ─── CANALES DE RESPUESTA ─────────────────────────────────
 import os as _os
 CANALES = {
@@ -29,4 +23,5 @@ CANALES = {
     'calculin':      int(_os.environ.get('CANAL_CALCULIN', 0) or 0),
     'blasa':         int(_os.environ.get('CANAL_BLASA', 0) or 0),
     'general':       int(_os.environ.get('CANAL_GENERAL', 0) or 0),
+    'viajes':        int(_os.environ.get('CANAL_VIAJES', 0) or 0),
 }
