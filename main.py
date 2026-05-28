@@ -19,6 +19,7 @@ import config, db, router
 from agents import tutoria, ef, recordatorios, racing, gastos, calculin, blasa, viajes
 from agents.tutoria import pending_grades
 from agents.gastos import pending_expenses
+from agents.viajes import pending_viajes
 from agents.tiempo import obtener_tiempo, formato_mensaje, get_ciudad, set_ciudad
 
 logging.basicConfig(
@@ -38,9 +39,12 @@ async def send_to_channel(bot, domain: str, text: str, fallback_chat_id: int = N
     chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
     for chunk in chunks:
         try:
-            await bot.send_message(chat_id=chat_id, text=chunk)
-        except Exception as e:
-            logger.error(f"Error enviando mensaje: {e}")
+            await bot.send_message(chat_id=chat_id, text=chunk, parse_mode='Markdown')
+        except Exception:
+            try:
+                await bot.send_message(chat_id=chat_id, text=chunk)
+            except Exception as e:
+                logger.error(f"Error enviando mensaje: {e}")
 
 async def transcribe_voice(bot, file_id: str) -> str | None:
     import requests, os
@@ -121,6 +125,7 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     from agents.gastos import pending_expenses
     from agents.tutoria import pending_grades
+    from agents.viajes import pending_viajes
     limpiados = []
     if chat_id in pending_expenses:
         del pending_expenses[chat_id]
@@ -128,6 +133,9 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id in pending_grades:
         del pending_grades[chat_id]
         limpiados.append("nota")
+    if chat_id in pending_viajes:
+        del pending_viajes[chat_id]
+        limpiados.append("viaje")
     if limpiados:
         await update.message.reply_text(f"Reset hecho. Limpiado: {', '.join(limpiados)}.")
     else:
@@ -174,7 +182,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     chat_id = update.effective_chat.id
 
-    # ── Cualquier confirmación pendiente de tutoría ───────
+    # ── Confirmación pendiente de tutoría ────────────────
     from agents.tutoria import pending_grades, pending_batch, pending_new_col
     hay_pendiente_tutoria = (
         chat_id in pending_grades or
@@ -190,6 +198,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id in pending_expenses:
         response = await gastos.handle(text, chat_id)
         await send_to_channel(context.bot, 'gastos', response, update.effective_chat.id)
+        return
+
+    # ── Cuestionario de viaje pendiente ──────────────────
+    if chat_id in pending_viajes:
+        response = await viajes.handle(text, chat_id)
+        await send_to_channel(context.bot, 'viajes', response, update.effective_chat.id)
         return
 
     await context.bot.send_chat_action(chat_id, 'typing')
@@ -256,7 +270,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif domain == 'blasa':
         response = await blasa.handle(clean_text, chat_id)
     elif domain == 'viajes':
-        response = await viajes.handle(clean_text)
+        response = await viajes.handle(clean_text, chat_id)
     else:
         response = gemini.ask("Eres el asistente personal de Txako. Responde en español.\n\n" + clean_text)
         domain = 'general'
@@ -276,7 +290,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Escuche: {transcription}")
     chat_id = update.effective_chat.id
 
-    # ── Confirmación pendiente de tutoría por voz ─────────
+    # ── Confirmación pendiente de tutoría por voz ────────
     from agents.tutoria import pending_grades, pending_batch, pending_new_col
     hay_pendiente_tutoria = (
         chat_id in pending_grades or
@@ -291,6 +305,12 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id in pending_expenses:
         response = await gastos.handle(transcription, chat_id)
         await send_to_channel(context.bot, 'gastos', response, chat_id)
+        return
+
+    # ── Cuestionario de viaje pendiente por voz ──────────
+    if chat_id in pending_viajes:
+        response = await viajes.handle(transcription, chat_id)
+        await send_to_channel(context.bot, 'viajes', response, chat_id)
         return
 
     es_tiempo, ciudad_mencionada = detectar_pregunta_tiempo(transcription)
@@ -341,7 +361,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif domain == 'blasa':
         response = await blasa.handle(transcription, chat_id)
     elif domain == 'viajes':
-        response = await viajes.handle(clean_trans)
+        response = await viajes.handle(clean_trans, chat_id)
     else:
         response = gemini.ask("Eres el asistente personal de Txako. Responde en espanol.\n\n" + transcription)
         domain = 'general'
