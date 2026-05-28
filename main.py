@@ -16,10 +16,9 @@ from apscheduler.triggers.cron import CronTrigger
 import gemini
 
 import config, db, router
-from agents import tutoria, ef, recordatorios, racing, gastos, calculin, blasa, viajes
+from agents import tutoria, ef, recordatorios, racing, gastos, calculin, blasa
 from agents.tutoria import pending_grades
 from agents.gastos import pending_expenses
-from agents.viajes import pending_viajes
 from agents.tiempo import obtener_tiempo, formato_mensaje, get_ciudad, set_ciudad
 
 logging.basicConfig(
@@ -39,28 +38,62 @@ async def send_to_channel(bot, domain: str, text: str, fallback_chat_id: int = N
     chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
     for chunk in chunks:
         try:
-            await bot.send_message(chat_id=chat_id, text=chunk, parse_mode='Markdown')
-        except Exception:
-            try:
-                await bot.send_message(chat_id=chat_id, text=chunk)
-            except Exception as e:
-                logger.error(f"Error enviando mensaje: {e}")
+            await bot.send_message(chat_id=chat_id, text=chunk)
+        except Exception as e:
+            logger.error(f"Error enviando mensaje: {e}")
 
 async def transcribe_voice(bot, file_id: str) -> str | None:
-    import requests, os
+    import requests, os, anthropic, base64
     try:
         file = await bot.get_file(file_id)
         file_bytes = await file.download_as_bytearray()
+
+        # Intentar con Groq primero
         groq_key = os.environ.get('GROQ_API_KEY', '')
-        response = requests.post(
-            "https://api.groq.com/openai/v1/audio/transcriptions",
-            headers={"Authorization": f"Bearer {groq_key}"},
-            files={"file": ("audio.ogg", bytes(file_bytes), "audio/ogg")},
-            data={"model": "whisper-large-v3", "language": "es"},
-            timeout=30
-        )
-        data = response.json()
-        return data.get("text", "").strip()
+        if groq_key:
+            try:
+                response = requests.post(
+                    "https://api.groq.com/openai/v1/audio/transcriptions",
+                    headers={"Authorization": f"Bearer {groq_key}"},
+                    files={"file": ("audio.ogg", bytes(file_bytes), "audio/ogg")},
+                    data={"model": "whisper-large-v3", "language": "es"},
+                    timeout=30
+                )
+                data = response.json()
+                if "text" in data:
+                    return data["text"].strip()
+            except Exception as e:
+                logger.warning(f"Groq falló, usando Anthropic: {e}")
+
+        # Fallback: Anthropic para transcripción
+        anthropic_key = os.environ.get('ANTHROPIC_API_KEY', '')
+        if anthropic_key:
+            client = anthropic.Anthropic(api_key=anthropic_key)
+            audio_b64 = base64.standard_b64encode(bytes(file_bytes)).decode('utf-8')
+            message = client.messages.create(
+                model="claude-opus-4-5",
+                max_tokens=1024,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "document",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "audio/ogg",
+                                "data": audio_b64
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": "Transcribe exactamente lo que dice este audio en español. Solo el texto, sin explicaciones."
+                        }
+                    ]
+                }]
+            )
+            return message.content[0].text.strip()
+
+        return None
     except Exception as e:
         logger.error(f"Error transcribiendo voz: {e}")
         return None
@@ -112,7 +145,7 @@ async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     chat_id = update.effective_chat.id
     db.save_channel(domain, chat_id)
-    emoji = {'ef':'🏃','tutoria':'📋','recordatorios':'⏰','racing':'📸','general':'🧠','viajes':'✈️'}.get(domain,'💬')
+    emoji = {'ef':'🏃','tutoria':'📋','recordatorios':'⏰','racing':'📸','general':'🧠'}.get(domain,'💬')
     await update.message.reply_text(f"{emoji} *Canal {domain.upper()} configurado*", parse_mode='Markdown')
     logger.info(f"Canal configurado: {domain} → {chat_id}")
 
@@ -125,7 +158,6 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     from agents.gastos import pending_expenses
     from agents.tutoria import pending_grades
-    from agents.viajes import pending_viajes
     limpiados = []
     if chat_id in pending_expenses:
         del pending_expenses[chat_id]
@@ -133,9 +165,6 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id in pending_grades:
         del pending_grades[chat_id]
         limpiados.append("nota")
-    if chat_id in pending_viajes:
-        del pending_viajes[chat_id]
-        limpiados.append("viaje")
     if limpiados:
         await update.message.reply_text(f"Reset hecho. Limpiado: {', '.join(limpiados)}.")
     else:
@@ -143,7 +172,7 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_canales(update: Update, context: ContextTypes.DEFAULT_TYPE):
     channels = db.get_channel_ids()
-    emoji_map = {'ef':'🏃','tutoria':'📋','recordatorios':'⏰','racing':'📸','gastos':'💰','calculin':'🧮','blasa':'🔔','general':'🧠','viajes':'✈️'}
+    emoji_map = {'ef':'🏃','tutoria':'📋','recordatorios':'⏰','racing':'📸','gastos':'💰','calculin':'🧮','blasa':'🔔','general':'🧠'}
     msg = "📡 *Estado de canales*\n\n"
     for domain in config.DOMAINS:
         emoji = emoji_map.get(domain,'💬')
@@ -182,7 +211,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     chat_id = update.effective_chat.id
 
-    # ── Confirmación pendiente de tutoría ────────────────
     from agents.tutoria import pending_grades, pending_batch, pending_new_col
     hay_pendiente_tutoria = (
         chat_id in pending_grades or
@@ -194,21 +222,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_to_channel(context.bot, 'tutoria', response, update.effective_chat.id)
         return
 
-    # ── Gasto pendiente ───────────────────────────────────
     if chat_id in pending_expenses:
         response = await gastos.handle(text, chat_id)
         await send_to_channel(context.bot, 'gastos', response, update.effective_chat.id)
         return
 
-    # ── Cuestionario de viaje pendiente ──────────────────
-    if chat_id in pending_viajes:
-        response = await viajes.handle(text, chat_id)
-        await send_to_channel(context.bot, 'viajes', response, update.effective_chat.id)
-        return
-
     await context.bot.send_chat_action(chat_id, 'typing')
 
-    # ── Pregunta sobre el tiempo ──────────────────────────
     es_tiempo, ciudad_mencionada = detectar_pregunta_tiempo(text)
     if es_tiempo:
         ciudad = ciudad_mencionada if ciudad_mencionada else get_ciudad()
@@ -224,7 +244,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ('pitagorín', 'calculin'), ('pitagorin', 'calculin'),
         ('ef,', 'ef'), ('ef:', 'ef'),
         ('racing', 'racing'), ('tutoría', 'tutoria'), ('tutoria', 'tutoria'),
-        ('viajes', 'viajes'), ('escapada', 'viajes'), ('viaje', 'viajes'),
     ]
     for nombre, dom in canal_nombres:
         if text_lower_check.startswith(nombre):
@@ -245,15 +264,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if any(k in text_lower_check for k in ef_triggers):
             domain = 'ef'
     if not domain:
-        viajes_triggers = [
-            'quiero ir a', 'planifica', 'organiza el viaje',
-            'ideas para viajar', 'dónde vamos', 'donde vamos',
-            'vacaciones de', 'viaje de', 'destino para',
-            'qué me recomiendas para viajar'
-        ]
-        if any(k in text_lower_check for k in viajes_triggers):
-            domain = 'viajes'
-    if not domain:
         domain = await router.classify(text)
     if domain == 'tutoria':
         response = await tutoria.handle(clean_text, chat_id)
@@ -269,8 +279,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = await calculin.handle(clean_text)
     elif domain == 'blasa':
         response = await blasa.handle(clean_text, chat_id)
-    elif domain == 'viajes':
-        response = await viajes.handle(clean_text, chat_id)
     else:
         response = gemini.ask("Eres el asistente personal de Txako. Responde en español.\n\n" + clean_text)
         domain = 'general'
@@ -290,7 +298,6 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Escuche: {transcription}")
     chat_id = update.effective_chat.id
 
-    # ── Confirmación pendiente de tutoría por voz ────────
     from agents.tutoria import pending_grades, pending_batch, pending_new_col
     hay_pendiente_tutoria = (
         chat_id in pending_grades or
@@ -307,12 +314,6 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_to_channel(context.bot, 'gastos', response, chat_id)
         return
 
-    # ── Cuestionario de viaje pendiente por voz ──────────
-    if chat_id in pending_viajes:
-        response = await viajes.handle(transcription, chat_id)
-        await send_to_channel(context.bot, 'viajes', response, chat_id)
-        return
-
     es_tiempo, ciudad_mencionada = detectar_pregunta_tiempo(transcription)
     if es_tiempo:
         ciudad = ciudad_mencionada if ciudad_mencionada else get_ciudad()
@@ -327,22 +328,12 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ('blasa', 'blasa'), ('manirrota', 'gastos'),
         ('pitagorín', 'calculin'), ('pitagorin', 'calculin'),
         ('racing', 'racing'), ('tutoría', 'tutoria'), ('tutoria', 'tutoria'),
-        ('viajes', 'viajes'), ('escapada', 'viajes'), ('viaje', 'viajes'),
     ]
     for nombre, dom in canal_nombres:
         if trans_lower.startswith(nombre):
             domain = dom
             clean_trans = transcription[len(nombre):].lstrip(',:').strip()
             break
-    if not domain:
-        viajes_triggers = [
-            'quiero ir a', 'planifica', 'organiza el viaje',
-            'ideas para viajar', 'dónde vamos', 'donde vamos',
-            'vacaciones de', 'viaje de', 'destino para',
-            'qué me recomiendas para viajar'
-        ]
-        if any(k in trans_lower for k in viajes_triggers):
-            domain = 'viajes'
     if not domain:
         domain = await router.classify(transcription)
     transcription = clean_trans
@@ -360,8 +351,6 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = await calculin.handle(transcription)
     elif domain == 'blasa':
         response = await blasa.handle(transcription, chat_id)
-    elif domain == 'viajes':
-        response = await viajes.handle(clean_trans, chat_id)
     else:
         response = gemini.ask("Eres el asistente personal de Txako. Responde en espanol.\n\n" + transcription)
         domain = 'general'
